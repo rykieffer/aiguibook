@@ -336,7 +336,7 @@ class CharacterAnalyzer:
                         }
                     ],
                     temperature=0.1,
-                    max_tokens=1500,
+                    max_tokens=500,
                     timeout=300.0,               )
 
                 content = response.choices[0].message.content.strip()
