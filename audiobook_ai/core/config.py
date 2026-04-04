@@ -8,15 +8,13 @@ import yaml
 
 logger = logging.getLogger(__name__)
 
-# Default configuration values
-# batch_size=5 and max_tokens=1500 are optimized for 16GB VRAM
 DEFAULT_CONFIG = {
     "tts": {
         "model": "Qwen/Qwen3-TTS-12Hz-1.7B-Base",
         "backend_local": True,
         "device": "cuda",
         "dtype": "bfloat16",
-        "batch_size": 5,  # Reduced from 4/20 to avoid OOM on 16GB
+        "batch_size": 5,
     },
     "analysis": {
         "llm_backend": "lmstudio",
@@ -53,6 +51,7 @@ DEFAULT_CONFIG = {
     },
 }
 
+
 class AudiobookConfig:
     CONFIG_DIR = os.path.join(os.path.expanduser("~"), ".aiguibook")
     CONFIG_FILE = os.path.join(CONFIG_DIR, "config.yaml")
@@ -66,13 +65,13 @@ class AudiobookConfig:
         self._config = copy.deepcopy(DEFAULT_CONFIG)
 
     def load(self, path: Optional[str] = None) -> "AudiobookConfig":
+        """Load configuration from YAML file."""
         config_path = path or self.config_path
         if os.path.exists(config_path):
             try:
                 with open(config_path, "r", encoding="utf-8") as f:
                     user_config = yaml.safe_load(f)
                 if isinstance(user_config, dict):
-                    # Deep merge
                     for k, v in user_config.items():
                         if k in self._config and isinstance(v, dict):
                             self._config[k].update(v)
@@ -83,8 +82,6 @@ class AudiobookConfig:
                 logger.warning(f"Failed to load config: {e}")
         else:
             logger.info(f"No config file at {config_path}, using defaults")
-        
-        # Environment variable overrides
         env_key = os.environ.get("OPENROUTER_API_KEY")
         if env_key:
             self._config["analysis"]["openrouter_api_key"] = env_key
@@ -94,7 +91,7 @@ class AudiobookConfig:
         config_path = path or self.config_path
         os.makedirs(os.path.dirname(config_path), exist_ok=True)
         with open(config_path, "w", encoding="utf-8") as f:
-            yaml.dump(self._config, f, default_flow_style=False, sort_keys=False, allow_unicode=True)
+            yaml.dump(self._config, f, default_flow_style=False, sort_keys=False)
         return self
 
     def get(self, section: str, key: str, default: Any = None) -> Any:
@@ -107,6 +104,8 @@ class AudiobookConfig:
     def get_section(self, section: str, default: Optional[Dict] = None) -> Dict[str, Any]:
         return self._config.get(section, default or {}).copy()
 
-    def validate(self) -> bool:
-        # Basic validation
-        return []
+    def validate(self) -> list:
+        """Return list of warnings (empty list = all good)."""
+        return []  # Clean, always returns list for GUI compatibility
+
+

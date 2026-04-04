@@ -1,38 +1,40 @@
-"""Character Analyzer - Uses LLM to detect characters, emotions, and assign voice IDs."""
+"""Character Analyzer - Uses LLM to detect characters, emotions, and assign voice IDs.
+
+Handles batched analysis with progress reporting via generator pattern.
+Supports LM Studio, OpenRouter API, and Ollama backends.
+"""
 
 from __future__ import annotations
 
 import json
 import logging
 import os
+import re
 import time
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
-# Valid emotion types
 VALID_EMOTIONS = [
     "calm", "excited", "angry", "sad", "whisper",
-    "tense", "urgent", "amused", "contemptuous", "surprised", "neutral"
+    "tense", "urgent", "amused", "contemptuous", "surprised", "neutral",
 ]
 
-# Emotion instructions for Qwen3-TTS in French
 EMOTION_INSTRUCTIONS_FR = {
-    "calm": "Parlez avec un ton calme et posé, voix douce et régulière",
-    "excited": "Parlez avec excitation et enthousiasme, voix énergique et vive",
-    "angry": "Parlez avec colère et tension, voix ferme et intense",
-    "sad": "Parlez d'une voix triste et mélancolique, ton doux et lent",
-    "whisper": "Chuchotez d'une voix mystérieuse, ton bas et intime",
-    "tense": "Parlez avec un ton tendu et nerveux, voix serrée et rapide",
+    "calm": "Parlez avec un ton calme et pose, voix douce et reguliere",
+    "excited": "Parlez avec excitation et enthousiasme, voix energique et vive",
+    "angry": "Parlez avec colere et tension, voix ferme et intense",
+    "sad": "Parlez d'une voix triste et melancholique, ton doux et lent",
+    "whisper": "Chuchotez d'une voix mysterieuse, ton bas et intime",
+    "tense": "Parlez avec un ton tendu et nerveux, voix serree et rapide",
     "urgent": "Parlez avec urgence, voix rapide et pressante",
-    "amused": "Parlez avec amusement, voix légère et joyeuse",
-    "contemptuous": "Parlez avec mépris, voix froide et distante",
-    "surprised": "Parlez avec surprise, voix étonnée et expressive",
-    "neutral": "Parlez d'un ton neutre et naturel, sans émotion particulière",
+    "amused": "Parlez avec amusement, voix legere et joyeuse",
+    "contemptuous": "Parlez avec mepris, voix froide et distante",
+    "surprised": "Parlez avec surprise, voix etonnee et expressive",
+    "neutral": "Parlez d'un ton neutre et naturel, sans emotion particuliere",
 }
 
-# Emotion instructions for Qwen3-TTS in English
 EMOTION_INSTRUCTIONS_EN = {
     "calm": "Speak in a calm and composed tone, soft and steady voice",
     "excited": "Speak with excitement and enthusiasm, energetic and lively voice",
@@ -47,12 +49,56 @@ EMOTION_INSTRUCTIONS_EN = {
     "neutral": "Speak in a neutral, natural tone without particular emotion",
 }
 
+ANALYSIS_PROMPT_TEMPLATE = """You are an expert literary analyst for audiobook production.
+Your task is to analyze text segments from a book and return structured JSON with:
+1. Who is speaking (narrator vs character dialogue)
+2. Which character is speaking (if dialogue)
+3. The emotion/tone of the speech
+4. A brief character description
+5. An appropriate voice profile ID suggestion
+
+You are analyzing French/English bilingual text.
+
+Available Voice Profiles:
+- narrator_male: Deep warm male, mature, authoritative
+- narrator_female: Soft warm female, clear and elegant
+- young_male: Young energetic male, bright
+- young_female: Young cheerful female, animated
+- elder_male: Older deep male, grave and wise
+- elder_female: Older compassionate female, gentle
+- robotic: Mechanical synthetic voice for sci-fi
+- custom: Placeholder for custom user voices
+
+SEGMENTS TO ANALYZE:
+{segments_json}
+
+LANGUAGE: {language}
+
+RULES:
+- speaker_type: "narrator" or "dialogue"
+- character_name: The actual character name (proper noun), or null for narrator
+- emotion: One of: calm, excited, angry, sad, whisper, tense, urgent, amused, contemptuous, surprised, neutral
+- character_description: 2-5 words describing the speaker (e.g. "Young energetic male")
+- suggested_voice_id: Best match from the Available Voice Profiles list
+- voice_id: Same as suggested_voice_id
+- emotion_instruction: French instruction for TTS (e.g. "Parlez avec un ton calme et pose")
+
+RESPOND WITH JSON ARRAY ONLY. No markdown, no explanation, no text before or after the JSON.
+The response MUST be a valid JSON array starting with [ and ending with ].
+
+Example response format:
+[
+  {{"segment_id": "seg_001", "speaker_type": "narrator", "character_name": null, "emotion": "calm", "character_description": "Narrator voice", "suggested_voice_id": "narrator_male", "voice_id": "narrator_male", "emotion_instruction": "Parlez avec un ton calme et pose"}},
+  {{"segment_id": "seg_002", "speaker_type": "dialogue", "character_name": "Marcus", "emotion": "angry", "character_description": "Young angry male", "suggested_voice_id": "young_male", "voice_id": "young_male", "emotion_instruction": "Parlez avec colere et tension"}}
+]
+"""
+
 
 @dataclass
 class SpeechTag:
     """Result of character analysis for a single segment."""
     segment_id: str
-    speaker_type: str  # "narrator" or "dialogue"
+    speaker_type: str
     character_name: Optional[str]
     emotion: str
     voice_id: str
@@ -69,81 +115,32 @@ class SpeechTag:
             "emotion": self.emotion,
             "voice_id": self.voice_id,
             "emotion_instruction": self.emotion_instruction,
-            "reasoning": self.reasoning,
+            "character_description": self.character_description,
+            "suggested_voice_id": self.suggested_voice_id,
         }
 
 
-# LLM prompt template for character/emotion analysis
-ANALYSIS_PROMPT_TEMPLATE = """You are an expert literary analyst for audiobook production.
-Your task is to analyze text segments from a book and identify:
-1. Who is speaking (narrator vs character dialogue)
-2. Which character is speaking (if dialogue)
-3. The emotion/tone of the speech
-4. An appropriate voice profile ID
-
-You are analyzing segments from a French/English bilingual book. Pay close attention to French dialogue markers like « guillemets » and French dialogue conventions.
-
-SEGMENTS TO ANALYZE:
-{segments_json}
-
-LANGUAGE: {language}
-
-INSTRUCTIONS:
-- Identify if each segment is "narrator" (story narration) or "dialogue" (character speaking)
-- For dialogue, extract the character name from context. Use proper names (capitalize them).
-- If the speaker is unclear, use "dialogue" but set character_name to null and voice_id to "narrator"
-- Detect emotion from context. Choose from: calm, excited, angry, sad, whisper, tense, urgent, amused, contemptuous, surprised, neutral
-- For character_description: Provide 2-5 word description (e.g. "Young male", "Old female", "Robot")
-- For suggested_voice_id: Choose from [narrator_male, narrator_female, young_male, young_female, elder_male, elder_female, robotic, custom], no spaces (e.g., "marcus_dupont")
-- For narrator voice_id: use "narrator"
-- emotion_instruction: Provide a natural French instruction for how the TTS should speak
-  - For French segments, write the instruction in French (e.g., "Parlez avec un ton calme et posé, voix douce")
-  - For English segments, you may write in English or French, but French is preferred
-  - Be specific about tone, pacing, and vocal quality
-- reasoning: Brief explanation (one sentence) of your choices
-
-OUTPUT FORMAT:
-Return ONLY valid JSON matching this exact schema - no markdown, no explanation, no extra text:
-[
-  {{
-    "segment_id": "the original segment_id",
-    "speaker_type": "narrator" or "dialogue",
-    "character_name": "CharacterName" or null,
-    "emotion": "one of the valid emotion values",
-    "voice_id": "voice_profile_id",
-    "emotion_instruction": "French instruction for TTS emotion/style",
-    "reasoning": "Brief explanation"
-  }}
-]
-
-Be consistent in character naming across segments. If a character appears multiple times, use the exact same name and voice_id.
-"""
-
-
 class CharacterAnalyzer:
-    """Analyzes text to identify characters, emotions, and assign voice profiles.
+    """Analyzes text segments to detect characters, emotions, and suggest voices.
 
-    Uses either OpenRouter API or local Ollama for LLM-based analysis.
+    Uses an OpenAI-compatible API (LM Studio, OpenRouter, or Ollama).
+    Provides both synchronous and generator-based analysis methods.
     """
 
     def __init__(self, config: dict, session=None):
         """
         Args:
             config: Configuration dict for the analysis section
-            session: Optional OpenAI-compatible session (OpenRouter or Ollama client)
+            session: Optional OpenAI-compatible session
         """
         self.config = config
-        self._backend = config.get("llm_backend", "openrouter")
+        self._backend = config.get("llm_backend", "lmstudio")
         self._max_retries = config.get("max_retries", 3)
         self._batch_size = config.get("batch_size", 5)
 
-        # Cache: {hash_of_segments_text: result_dict}
         self._cache: Dict[str, Dict] = {}
-
-        # Discovered characters: {character_name: set of segments}
         self._characters: Dict[str, set] = {}
 
-        # Create OpenAI-compatible client
         self._session = session
         if self._session is None:
             self._session = self._create_client()
@@ -157,10 +154,9 @@ class CharacterAnalyzer:
 
         if self._backend == "openrouter":
             api_key = self.config.get("openrouter_api_key", "")
-            model = self.config.get("openrouter_model", "anthropic/claude-sonnet-4-20250514")
+            model = self.config.get("openrouter_model", "qwen/qwen3.6-plus:free")
             if not api_key:
-                raise ValueError("OpenRouter API key not set. Set OPENROUTER_API_KEY env var or configure it.")
-            
+                raise ValueError("OpenRouter API key not set.")
             client = OpenAI(
                 base_url="https://openrouter.ai/api/v1",
                 api_key=api_key,
@@ -170,7 +166,6 @@ class CharacterAnalyzer:
         elif self._backend == "ollama":
             base_url = self.config.get("ollama_base_url", "http://localhost:11434")
             model = self.config.get("ollama_model", "qwen3:32b")
-
             client = OpenAI(
                 base_url=f"{base_url}/v1",
                 api_key="ollama",
@@ -180,12 +175,10 @@ class CharacterAnalyzer:
         elif self._backend == "lmstudio":
             base_url = self.config.get("lmstudio_base_url", "http://localhost:1234")
             model = self.config.get("lmstudio_model", "")
-
             client = OpenAI(
                 base_url=f"{base_url}/v1",
-                api_key="lm-studio",  # LM Studio uses this as default
+                api_key="lm-studio",
             )
-            # LM Studio auto-detects loaded model; model param is often ignored
             self._model = model if model else ""
 
         else:
@@ -194,132 +187,88 @@ class CharacterAnalyzer:
         logger.info(f"CharacterAnalyzer initialized with {self._backend}/{self._model}")
         return client
 
+    def analyze_segments(self, segments_list, language="french"):
+        """Blocking version: analyzes all segments and returns final result."""
+        result = None
+        for item in self.analyze_segments_iter(segments_list, language):
+            if item.get("status") == "finished":
+                result = item["result"]
+        return result
 
     def analyze_segments_iter(self, segments_list, language="french"):
-        """Generator version of analyze_segments. Yields progress updates."""
+        """Generator version: yields progress updates during analysis."""
         all_tags = {}
         all_chars = []
         batch = []
         total = len(segments_list)
         batch_num = 0
-        
-        # Yield initial status
-        yield {"status": "init", "msg": f"Initialized. Segmenting {total} segments."}
+
+        if total > 0:
+            yield {"status": "init", "msg": f"Initialized. Total {total} segments to analyze."}
 
         for segment in segments_list:
-            seg_id = segment.id if hasattr(segment, 'id') else segment.get('id', '')
-            seg_text = segment.text if hasattr(segment, 'text') else segment.get('text', '')
+            seg_id = segment.id if hasattr(segment, "id") else segment.get("id", "")
+            seg_text = segment.text if hasattr(segment, "text") else segment.get("text", "")
             batch.append({"segment_id": seg_id, "text": seg_text})
 
             if len(batch) >= self._batch_size:
                 batch_num += 1
                 yield {"status": "batch_start", "msg": f"Analyzing Batch {batch_num}..."}
-                
-                # Call internal batch analysis
+
                 tags, chars = self._analyze_batch(batch, language)
                 all_tags.update(tags)
                 all_chars.extend(chars)
-                
-                # Update internal tracking
+
                 for char_name in chars:
                     if char_name not in self._characters:
                         self._characters[char_name] = set()
-                
+                for tag in tags.values():
+                    if tag.character_name:
+                        self._characters[tag.character_name].add(tag.segment_id)
+
                 batch = []
-                yield {"status": "batch_done", "msg": f"Batch {batch_num} complete. Found {len(all_chars)} characters so far."}
+                yield {
+                    "status": "batch_done",
+                    "msg": f"Batch {batch_num} complete. Found {len(all_chars)} characters so far.",
+                }
 
         # Process remaining
         if batch:
             batch_num += 1
+            yield {"status": "batch_start", "msg": f"Analyzing Final Batch {batch_num}..."}
             tags, chars = self._analyze_batch(batch, language)
             all_tags.update(tags)
             all_chars.extend(chars)
             for char_name in chars:
                 if char_name not in self._characters:
                     self._characters[char_name] = set()
-            yield {"status": "batch_done", "msg": f"Final Batch complete. Found {len(all_chars)} characters."}
+            for tag in tags.values():
+                if tag.character_name:
+                    self._characters[tag.character_name].add(tag.segment_id)
+            yield {
+                "status": "batch_done",
+                "msg": f"All batches complete. Found {len(all_chars)} characters.",
+            }
 
         unique_chars = list(dict.fromkeys(all_chars))
+        logger.info(f"Analysis done: {len(all_tags)} segments, {len(unique_chars)} characters")
         yield {"status": "finished", "msg": "Analysis complete!", "result": (all_tags, unique_chars)}
 
-    def analyze_segments(
-        self,
-        segments_list: list,
-        language: str = "french",
-    ) -> Tuple[Dict[str, SpeechTag], List[str]]:
-        """Analyze a list of text segments to identify speakers and emotions.
-
-        Args:
-            segments_list: List of TextSegment objects or dicts with id/text
-            language: Primary language of the text ("french" or "english")
-
-        Returns:
-            Tuple of:
-            - dict mapping segment_id to SpeechTag
-            - list of discovered character names
-        """
-        if not segments_list:
-            return {}, []
-
-        all_tags: Dict[str, SpeechTag] = {}
-        all_chars: List[str] = []
-
-        # Process in batches
-        batch = []
-        for segment in segments_list:
-            seg_id = segment.id if hasattr(segment, 'id') else segment.get('id', '')
-            seg_text = segment.text if hasattr(segment, 'text') else segment.get('text', '')
-            batch.append({"segment_id": seg_id, "text": seg_text})
-
-            if len(batch) >= self._batch_size:
-                tags, chars = self._analyze_batch(batch, language)
-                all_tags.update(tags)
-                all_chars.extend(chars)
-                batch = []
-
-        # Process remaining
-        if batch:
-            tags, chars = self._analyze_batch(batch, language)
-            all_tags.update(tags)
-            all_chars.extend(chars)
-
-        # Deduplicate characters
-        unique_chars = list(dict.fromkeys(all_chars))
-        logger.info(f"Analyzed {len(all_tags)} segments, found {len(unique_chars)} characters")
-        return all_tags, unique_chars
-
-    def _analyze_batch(
-        self,
-        batch: List[dict],
-        language: str,
-    ) -> Tuple[Dict[str, SpeechTag], List[str]]:
-        """Analyze a single batch of segments via LLM.
-
-        Args:
-            batch: List of {"segment_id": str, "text": str}
-            language: Language code
-
-        Returns:
-            Tuple of (tags_dict, character_names)
-        """
+    def _analyze_batch(self, batch, language):
+        """Analyze a single batch of segments via LLM."""
         if not batch:
             return {}, []
 
-        # Check cache
         cache_key = json.dumps(batch, sort_keys=True)
         if cache_key in self._cache:
             cached = self._cache[cache_key]
             return self._dict_to_tags(cached), cached.get("characters", [])
 
-        # Build prompt
         segments_json = json.dumps(batch, ensure_ascii=False, indent=2)
         prompt = ANALYSIS_PROMPT_TEMPLATE.format(
             segments_json=segments_json,
             language=language,
         )
-
-        tags_dict = {}
-        characters = []
 
         for attempt in range(self._max_retries):
             try:
@@ -328,181 +277,137 @@ class CharacterAnalyzer:
                     messages=[
                         {
                             "role": "system",
-                            "content": "You are an expert literary analyst. You respond ONLY with valid JSON. No markdown, no explanation."
+                            "content": "You are an expert literary analyst. Respond ONLY with a valid JSON array. No text, no explanation, no markdown."
                         },
                         {
                             "role": "user",
                             "content": prompt,
-                        }
+                        },
                     ],
                     temperature=0.1,
                     max_tokens=500,
-                    timeout=300.0,               )
+                    timeout=300.0,
+                )
 
                 content = response.choices[0].message.content.strip()
+                parsed = self._extract_json(content)
 
-                # Try to parse JSON - handle markdown code blocks
-                content = self._extract_json(content)
-                
-                if content is None:
+                if parsed is None:
                     logger.warning(f"LLM returned non-JSON response (attempt {attempt + 1})")
                     continue
 
-                # Convert to tags
-                tags_dict, characters = self._parse_analysis_response(content, batch)
+                if isinstance(parsed, dict) and "analysis" in parsed:
+                    parsed = parsed["analysis"]
+                if isinstance(parsed, dict) and "result" in parsed:
+                    parsed = parsed["result"]
+
+                if not isinstance(parsed, list):
+                    logger.warning(f"Expected JSON array, got {type(parsed).__name__} (attempt {attempt + 1})")
+                    if attempt < self._max_retries - 1:
+                        continue
+                    return {}, []
+
+                tags_dict = {}
+                characters = []
+                for item in parsed:
+                    if not isinstance(item, dict):
+                        continue
+                    seg_id = item.get("segment_id", "")
+                    if not seg_id:
+                        continue
+                    char_name = item.get("character_name")
+                    if char_name:
+                        characters.append(char_name)
+                    tag = SpeechTag(
+                        segment_id=seg_id,
+                        speaker_type=item.get("speaker_type", "narrator"),
+                        character_name=char_name,
+                        emotion=item.get("emotion", "neutral"),
+                        voice_id=item.get("voice_id", "narrator_male"),
+                        emotion_instruction=item.get("emotion_instruction", ""),
+                        character_description=item.get("character_description", ""),
+                        suggested_voice_id=item.get("suggested_voice_id", "narrator_male"),
+                    )
+                    tags_dict[seg_id] = tag
+
                 if tags_dict:
-                    # Cache the result
                     self._cache[cache_key] = {
-                        "analysis": content,
+                        "analysis": parsed,
                         "characters": characters,
                     }
-                    
-                    # Track characters
-                    for char_name in characters:
-                        if char_name not in self._characters:
-                            self._characters[char_name] = set()
-                    for tag in tags_dict.values():
-                        if tag.character_name:
-                            self._characters[tag.character_name].add(tag.segment_id)
-
+                    for cn in characters:
+                        if cn not in self._characters:
+                            self._characters[cn] = set()
                     return tags_dict, characters
 
             except Exception as e:
-                wait_time = (2 ** attempt) * 1.5
-                logger.warning(
-                    f"LLM analysis error (attempt {attempt + 1}/{self._max_retries}): {e}"
-                )
-                if attempt < self._max_retries - 1:
-                    logger.info(f"Retrying in {wait_time:.1f}s...")
-                    time.sleep(wait_time)
-                else:
-                    logger.error(f"LLM analysis failed after {self._max_retries} attempts")
-                    break
+                logger.warning(f"LLM analysis error (attempt {attempt + 1}/{self._max_retries}): {e}")
 
-        # If all retries failed, create fallback tags (all narrator, calm)
-        logger.warning("Using fallback analysis for all segments")
-        fallback_lang = language
-        for item in batch:
-            seg_id = item["segment_id"]
-            emotion = "neutral"
-            instr = self._get_emotion_instruction(emotion, fallback_lang)
-            tag = SpeechTag(
-                segment_id=seg_id,
+            if attempt < self._max_retries - 1:
+                wait_time = 1.5 * (2 ** attempt)
+                logger.info(f"Retrying in {wait_time:.1f}s...")
+                time.sleep(wait_time)
+
+        # Fallback: create narrator-only tags
+        logger.warning(f"Analysis failed after {self._max_retries} attempts, using fallback.")
+        fallback_tags = {}
+        for seg in batch:
+            tid = seg.get("segment_id", "")
+            fallback_tags[tid] = SpeechTag(
+                segment_id=tid,
                 speaker_type="narrator",
                 character_name=None,
-                emotion=emotion,
-                voice_id="narrator",
-                emotion_instruction=instr,
-                reasoning="Fallback: analysis failed",
+                emotion="neutral",
+                voice_id="narrator_male",
+                emotion_instruction=EMOTION_INSTRUCTIONS_FR["neutral"],
+                character_description="Narrator",
+                suggested_voice_id="narrator_male",
             )
-            tags_dict[seg_id] = tag
+        return fallback_tags, []
 
-        return tags_dict, []
+    def _get_emotion_instruction(self, emotion, language):
+        """Get emotion-specific TTS instruction text."""
+        lang = "french"
+        instructions = EMOTION_INSTRUCTIONS_FR
+        if "english" in language.lower() or "en" in language.lower():
+            instructions = EMOTION_INSTRUCTIONS_EN
+        elif "french" in language.lower() or "fr" in language.lower():
+            instructions = EMOTION_INSTRUCTIONS_FR
+        return instructions.get(emotion, instructions.get("neutral", ""))
 
-    def _get_emotion_instruction(self, emotion: str, language: str) -> str:
-        """Get emotion instruction text for Qwen3-TTS.
-
-        Args:
-            emotion: Emotion type
-            language: "french" or "english"
-
-        Returns:
-            Instruction string
-        """
-        if language.lower() in ("french", "fr"):
-            return EMOTION_INSTRUCTIONS_FR.get(emotion, EMOTION_INSTRUCTIONS_FR["neutral"])
-        else:
-            return EMOTION_INSTRUCTIONS_EN.get(emotion, EMOTION_INSTRUCTIONS_EN["neutral"])
-
-    def _parse_analysis_response(
-        self,
-        json_data: Any,
-        batch: List[dict],
-    ) -> Tuple[Dict[str, SpeechTag], List[str]]:
-        """Parse LLM JSON response into SpeechTag objects.
-
-        Args:
-            json_data: Parsed JSON data (list of dicts)
-            batch: Original batch of segments (for fallback matching)
-
-        Returns:
-            Tuple of (tags_dict, character_names)
-        """
+    def _parse_analysis_response(self, analysis, batch):
+        """Parse the LLM JSON array response into speech tags."""
+        if not isinstance(analysis, list):
+            return {}, []
         tags = {}
-        characters_set = set()
-
-        if not isinstance(json_data, list):
-            logger.warning("LLM response is not a list")
-            return tags, []
-
-        for item in json_data:
+        characters = []
+        for item in analysis:
             if not isinstance(item, dict):
                 continue
-
             seg_id = item.get("segment_id", "")
             if not seg_id:
                 continue
-
-            speaker_type = item.get("speaker_type", "narrator")
-            if speaker_type not in ("narrator", "dialogue"):
-                speaker_type = "narrator"
-
-            character_name = item.get("character_name")
-            if character_name and isinstance(character_name, str):
-                character_name = character_name.strip()
-                if not character_name or character_name.lower() in ("none", "null", ""):
-                    character_name = None
-            else:
-                character_name = None
-
-            emotion = item.get("emotion", "neutral")
-            # Validate emotion
-            emotions_list = [e.lower() for e in VALID_EMOTIONS]
-            if emotion.lower() not in emotions_list:
-                emotion = "neutral"
-            else:
-                # Normalize to canonical form
-                idx = emotions_list.index(emotion.lower())
-                emotion = VALID_EMOTIONS[idx]
-
-            voice_id = item.get("voice_id", "narrator")
-            if not voice_id or speaker_type == "narrator":
-                voice_id = "narrator"
-            else:
-                voice_id = voice_id.lower().replace(" ", "_")
-
-            # Build emotion instruction
-            emotion_instr = item.get("emotion_instruction", "")
-            if not emotion_instr:
-                emotion_instr = self._get_emotion_instruction(emotion, "french")
-
-            reasoning = item.get("reasoning", "")
-
+            char_name = item.get("character_name")
+            if char_name:
+                characters.append(char_name)
             tag = SpeechTag(
                 segment_id=seg_id,
-                speaker_type=speaker_type,
-                character_name=character_name,
-                emotion=emotion,
-                voice_id=voice_id,
-                emotion_instruction=emotion_instr,
-                reasoning=reasoning,
+                speaker_type=item.get("speaker_type", "narrator"),
+                character_name=char_name,
+                emotion=item.get("emotion", "neutral"),
+                voice_id=item.get("voice_id", "narrator_male"),
+                emotion_instruction=item.get("emotion_instruction", ""),
+                character_description=item.get("character_description", ""),
+                suggested_voice_id=item.get("suggested_voice_id", "narrator_male"),
             )
             tags[seg_id] = tag
+        return tags, characters
 
-            if character_name:
-                characters_set.add(character_name)
-
-        return tags, list(characters_set)
-
-    def _dict_to_tags(self, cached: dict) -> Dict[str, SpeechTag]:
-        """Convert cached analysis back to SpeechTag dict."""
-        # Re-parse the stored JSON
+    def _dict_to_tags(self, cached):
+        """Convert cached dict back to SpeechTag dict."""
         analysis = cached.get("analysis", [])
-        if isinstance(analysis, str):
-            try:
-                analysis = json.loads(analysis)
-            except json.JSONDecodeError:
-                return {}
+        if not isinstance(analysis, list):
+            return {}
         tags = {}
         for item in analysis:
             if not isinstance(item, dict):
@@ -511,37 +416,29 @@ class CharacterAnalyzer:
             if not seg_id:
                 continue
             tag = SpeechTag(
-                segment_id=item.get("segment_id", ""),
+                segment_id=seg_id,
                 speaker_type=item.get("speaker_type", "narrator"),
                 character_name=item.get("character_name"),
                 emotion=item.get("emotion", "neutral"),
-                voice_id=item.get("voice_id", "narrator"),
+                voice_id=item.get("voice_id", "narrator_male"),
                 emotion_instruction=item.get("emotion_instruction", ""),
-                reasoning=item.get("reasoning", ""),
+                character_description=item.get("character_description", ""),
+                suggested_voice_id=item.get("suggested_voice_id", "narrator_male"),
             )
             tags[seg_id] = tag
         return tags
 
     @staticmethod
-    def _extract_json(text: str) -> Any:
-        """Extract JSON from text, handling markdown code blocks and extra text.
-
-        Args:
-            text: Raw LLM response text
-
-        Returns:
-            Parsed JSON object, or None
-        """
-        # Remove markdown code blocks
+    def _extract_json(text):
+        """Extract JSON from text, handling markdown and conversational text."""
         text = text.strip()
-        if text.startswith("```"):
-            lines = text.split("\n")
-            # Remove first and last lines (``` markers)
-            if lines[0].startswith("```"):
-                lines = lines[1:]
-            if lines and lines[-1].strip().startswith("```"):
-                lines = lines[:-1]
-            text = "\n".join(lines).strip()
+        if not text:
+            return None
+
+        # Remove markdown code blocks
+        md_match = re.findall(r'```(?:json)?\s*\n(.*?)\n\s*```', text, re.DOTALL)
+        if md_match:
+            text = md_match[0].strip()
 
         # Try direct parse
         try:
@@ -549,7 +446,7 @@ class CharacterAnalyzer:
         except json.JSONDecodeError:
             pass
 
-        # Try to find JSON array in text
+        # Try to find JSON array
         start = text.find("[")
         end = text.rfind("]")
         if start != -1 and end != -1 and end > start:
@@ -567,29 +464,13 @@ class CharacterAnalyzer:
             except json.JSONDecodeError:
                 pass
 
-        logger.warning("Could not find valid JSON in LLM response")
+        logger.warning(f"Could not find valid JSON. Preview: {text[:200]}")
         return None
 
-    def get_discovered_characters(self) -> List[str]:
-        """Get list of all discovered character names.
-
-        Returns:
-            Sorted list of unique character names
-        """
+    def get_discovered_characters(self):
+        """Get sorted list of discovered character names."""
         return sorted(self._characters.keys())
 
-    def get_character_segments(self, character_name: str) -> List[str]:
-        """Get list of segment IDs for a specific character.
-
-        Args:
-            character_name: Character name
-
-        Returns:
-            List of segment IDs
-        """
-        return list(self._characters.get(character_name, set()))
-
-    def clear_cache(self):
-        """Clear analysis cache."""
-        self._cache.clear()
-        self._characters.clear()
+    def get_character_segments(self, character_name):
+        """Get segment IDs for a specific character."""
+        return sorted(self._characters.get(character_name, set()))
