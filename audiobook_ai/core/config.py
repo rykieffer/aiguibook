@@ -109,4 +109,4 @@ class AudiobookConfig:
 
     def validate(self) -> bool:
         # Basic validation
-        return bool(self._config.get("tts"))
+        return []
