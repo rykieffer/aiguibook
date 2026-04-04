@@ -633,39 +633,72 @@ class AudiobookGUI:
             )
 
     def _on_run_analysis(self, state):
-        """Run character/emotion analysis."""
+        """Generator-based analysis to provide live progress updates."""
         self._ensure_voices_initialized()
         if not self._epub_parser or not getattr(self._epub_parser, '_chapters', None):
-            return "No book loaded.", [], state
+            yield "No book loaded.", [], state
+            return
         chapters = self._epub_parser._chapters
         if not chapters:
-            return "No chapters found.", [], state
-        self._log("Analyzing characters and emotions...")
+            yield "No chapters found.", [], state
+            return
+
+        self._log("Starting character and emotion analysis...")
+        yield "Starting analysis...", [], state
+        
         try:
             from audiobook_ai.core.text_segmenter import TextSegmenter
             seg = TextSegmenter(max_words=150, min_words=20)
             all_segs = []
+            
+            self._log("Segmenting text...")
+            yield "Segmenting book into chunks...", [], state
+            
             for ch in chapters:
                 all_segs.extend(seg.segment_chapter(ch.text, ch.title, ch.spine_order))
+            
             if not all_segs:
-                return "No text segments.", [], state
+                yield "No text segments to analyze.", [], state
+                return
+
+            self._log(f"Total {len(all_segs)} chunks. Initializing LLM...")
+            yield f"Starting analysis of {len(all_segs)} chunks...", [], state
+
             from audiobook_ai.analysis.character_analyzer import CharacterAnalyzer
             cfg = self.config.get_section("analysis")
             self._analyzer = CharacterAnalyzer(cfg)
             lang = self.config.get("general", "language", "french")
-            self._segment_tags, self._discovered_chars = self._analyzer.analyze_segments(all_segs, language=lang)
-            state["analyzed"] = True
-            chars = []
-            tags = list(self._segment_tags.values())
-            for cn in self._discovered_chars:
-                s = self._voice_manager.suggest_voice_for_character(cn, tags)
-                chars.append({"name": cn, "suggested_voice": s["suggested_voice"], "confidence": s["confidence"], "description": s["description"]})
-            self._log(f"Found {len(chars)} characters.")
-            return f"Analyzed {len(all_segs)} segments. Found {len(chars)} characters.", chars, state
+            
+            # Use the iterator for live updates
+            for item in self._analyzer.analyze_segments_iter(all_segs, language=lang):
+                status = item.get("status", "")
+                msg = item.get("msg", "")
+                
+                if status in ["batch_start", "batch_done", "init"]:
+                    # Update the status box
+                    self._log(msg)
+                    yield msg, [], state
+                elif status == "finished":
+                    self._segment_tags, self._discovered_chars = item["result"]
+                    state["analyzed"] = True
+                    
+                    # Build suggestions
+                    chars = []
+                    tags = list(self._segment_tags.values())
+                    for cn in self._discovered_chars:
+                        s = self._voice_manager.suggest_voice_for_character(cn, tags)
+                        chars.append({"name": cn, "suggested_voice": s["suggested_voice"], "confidence": s["confidence"], "description": s["description"]})
+                    
+                    msg = f"Done! Found {len(chars)} characters."
+                    self._log(msg)
+                    yield msg, chars, state
+                    return
+                    
         except Exception as e:
-            self._log(f"Error: {e}")
-            return f"Failed: {e}", [], state
-
+            import traceback
+            err_msg = f"Error: {e}\n{traceback.format_exc()}"
+            self._log(f"ANALYSIS FAILED: {err_msg}")
+            yield f"Failed: {e}", [], state
     def _on_setup_default_voices(self):
         """Create default voice profiles."""
         try:

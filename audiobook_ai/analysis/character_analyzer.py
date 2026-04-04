@@ -194,6 +194,54 @@ class CharacterAnalyzer:
         logger.info(f"CharacterAnalyzer initialized with {self._backend}/{self._model}")
         return client
 
+
+    def analyze_segments_iter(self, segments_list, language="french"):
+        """Generator version of analyze_segments. Yields progress updates."""
+        all_tags = {}
+        all_chars = []
+        batch = []
+        total = len(segments_list)
+        batch_num = 0
+        
+        # Yield initial status
+        yield {"status": "init", "msg": f"Initialized. Segmenting {total} segments."}
+
+        for segment in segments_list:
+            seg_id = segment.id if hasattr(segment, 'id') else segment.get('id', '')
+            seg_text = segment.text if hasattr(segment, 'text') else segment.get('text', '')
+            batch.append({"segment_id": seg_id, "text": seg_text})
+
+            if len(batch) >= self._batch_size:
+                batch_num += 1
+                yield {"status": "batch_start", "msg": f"Analyzing Batch {batch_num}..."}
+                
+                # Call internal batch analysis
+                tags, chars = self._analyze_batch(batch, language)
+                all_tags.update(tags)
+                all_chars.extend(chars)
+                
+                # Update internal tracking
+                for char_name in chars:
+                    if char_name not in self._characters:
+                        self._characters[char_name] = set()
+                
+                batch = []
+                yield {"status": "batch_done", "msg": f"Batch {batch_num} complete. Found {len(all_chars)} characters so far."}
+
+        # Process remaining
+        if batch:
+            batch_num += 1
+            tags, chars = self._analyze_batch(batch, language)
+            all_tags.update(tags)
+            all_chars.extend(chars)
+            for char_name in chars:
+                if char_name not in self._characters:
+                    self._characters[char_name] = set()
+            yield {"status": "batch_done", "msg": f"Final Batch complete. Found {len(all_chars)} characters."}
+
+        unique_chars = list(dict.fromkeys(all_chars))
+        yield {"status": "finished", "msg": "Analysis complete!", "result": (all_tags, unique_chars)}
+
     def analyze_segments(
         self,
         segments_list: list,
