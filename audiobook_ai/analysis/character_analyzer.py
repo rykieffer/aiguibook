@@ -285,7 +285,7 @@ class CharacterAnalyzer:
                         },
                     ],
                     temperature=0.1,
-                    max_tokens=500,
+                    max_tokens=2000,
                     timeout=300.0,
                 )
 
