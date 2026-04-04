@@ -1,0 +1,64 @@
+# AIGUIBook Configuration
+# This file is copied to ~/.aiguibook/config.yaml on first run
+# Edit it to customize your settings
+
+# Text-to-Speech Engine
+tts:
+  # Main model: Base for voice cloning, CustomVoice for built-in voices
+  model: "Qwen/Qwen3-TTS-12Hz-1.7B-Base"
+  # Alternative: Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice (built-in voices: Ryan, Aiden, Vivian, etc.)
+  # Lightweight: Qwen/Qwen3-TTS-12Hz-0.6B-Base (faster, lower quality)
+  backend_local: true
+  device: "cuda"
+  dtype: "bfloat16"        # bfloat16 for RTX 5080, float16 if unsupported
+  batch_size: 4            # 4-8 for 16GB VRAM
+
+# Character & Emotion Analysis (LLM)
+analysis:
+  # Backend options: lmstudio, openrouter, ollama
+  # lmstudio = FREE, runs on your GPU, you already have it
+  llm_backend: "lmstudio"
+
+  # LM Studio settings (default: OpenAI-compatible API on port 1234)
+  lmstudio_base_url: "http://localhost:1234"
+  lmstudio_model: "gemma-4-26b-a4b"   # Model loaded in LM Studio
+
+  # OpenRouter settings (fallback, very cheap ~EUR 0.15/book)
+  openrouter_api_key: ""              # Set via OPENROUTER_API_KEY env var
+  openrouter_model: "qwen/qwen3.6-plus:free"  # Free tier! No cost at all
+  # Paid alternative: "anthropic/claude-sonnet-4-20250514" (~EUR 0.15/book)
+
+  # Ollama settings (alternative local option)
+  ollama_model: "qwen3:32b"
+  ollama_base_url: "http://localhost:11434"
+
+# Voice Profiles
+voices:
+  # Narrator reference audio (optional, leave empty for default generated voice)
+  narrator_ref: ""
+  # Character reference files: {character_name: path_to_ref_audio.wav}
+  character_refs: {}
+
+# Output Settings
+output:
+  format: "m4b"                # m4b (audiobook), m4a, flac, wav
+  bitrate: "128k"              # AAC bitrate (higher = better quality)
+  sample_rate: 24000           # TTS sample rate
+  chapter_markers: true        # Add chapter markers to M4B
+  normalize_audio: true        # Normalize to -16 LUFS (audiobook standard)
+  crossfade_duration: 0.5      # Crossfade between segments (seconds)
+
+# Quality Validation (Whisper STT re-check)
+validation:
+  enabled: true
+  whisper_model: "distil-medium.en"   # or "distil-large-v3" for French
+  whisper_device: "cuda"
+  max_wer: 15                  # Word Error Rate threshold (%) for retry
+  max_retries: 2               # Max retries per segment
+
+# General Settings
+general:
+  language: "french"           # Primary language of the book
+  language_fallback: "english" # Secondary language
+  max_segments: 99999          # Limit segments (for testing)
+  preview_mode: false          # Only process first 3 chapters

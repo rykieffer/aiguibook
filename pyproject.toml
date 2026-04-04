@@ -1,0 +1,41 @@
+[project]
+name = "aiguibook"
+version = "0.1.0"
+description = "AI-powered audiobook generator with character voices and emotion - EPUB to M4B"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "MIT"}
+authors = [{name = "Roland", email = ""}]
+dependencies = [
+    "qwen-tts>=0.1.0",
+    "torch>=2.5.1",
+    "torchaudio>=2.5.1",
+    "faster-whisper>=1.0.0",
+    "transformers>=4.45.0",
+    "accelerate",
+    "openai>=1.0.0",
+    "pyyaml>=6.0",
+    "gradio>=5.0.0",
+    "ebooklib>=0.18",
+    "lxml",
+    "pydantic>=2.0",
+    "jiwer>=3.0",
+    "pydub",
+    "ffmpeg-python",
+    "soundfile>=0.12.0",
+    "numpy",
+    "rich",
+    "click",
+    "Levenshtein",
+]
+
+[project.scripts]
+aiguibook = "cli:main"
+aiguibook-gui = "main:main"
+
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["audiobook_ai*"]

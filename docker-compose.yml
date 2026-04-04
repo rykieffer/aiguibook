@@ -1,0 +1,37 @@
+services:
+  aiguibook:
+    build: .
+    image: aiguibook:latest
+    container_name: aiguibook
+    runtime: nvidia
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+      # Set your API keys here (optional)
+      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY:-}
+      # LM Studio runs on host, accessible via host.docker.internal
+      - LMSTUDIO_BASE_URL=http://host.docker.internal:1234
+    ports:
+      - "7860:7860"
+    volumes:
+      # Persist config
+      - ./config:/home/aiguibook/.aiguibook
+      # Persist voices
+      - ./voices:/home/aiguibook/app/voices
+      # Persist output audiobooks
+      - ./output:/home/aiguibook/app/output
+      # Persist HuggingFace model cache
+      - hf_cache:/home/aiguibook/.cache/huggingface
+      # Mount your EPUB files
+      - ${EPUB_DIR:-./epub}:/home/aiguibook/epubs:ro
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+
+volumes:
+  hf_cache:
+    driver: local
