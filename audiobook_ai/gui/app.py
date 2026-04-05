@@ -287,7 +287,7 @@ class AudiobookGUI:
             # Analyze
             cfg = self.config.get_section("analysis")
             self.analyzer = CharacterAnalyzer(cfg)
-            tags, chars = self.analyzer.analyze_segments(all_segs)
+            tags, chars, _dedup_map = self.analyzer.analyze_segments(all_segs)
             
             self.tags = tags
             self.characters = chars
