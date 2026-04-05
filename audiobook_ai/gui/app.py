@@ -954,3 +954,9 @@ class AudiobookGUI:
             server_name="0.0.0.0", server_port=port,
             share=share, css=css, favicon_path=None
         )
+
+def _on_output_ready(self):
+    pass
+
+def _on_run_pipeline_thread(self):
+    pass
