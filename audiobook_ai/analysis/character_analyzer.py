@@ -281,7 +281,6 @@ class CharacterAnalyzer:
         language: str = "french",
     ) -> Generator[Dict[str, Any], None, None]:
         """Generator: yields progress updates during analysis."""
-        import sys
         all_tags: Dict[str, SpeechTag] = {}
         all_chars: List[str] = []
         total = len(segments_list)
@@ -296,11 +295,7 @@ class CharacterAnalyzer:
             seg_text = segment.text if hasattr(segment, "text") else segment.get("text", "")
             
             done = i + 1
-            yield {
-                "status": "analyzing",
-                "msg": f"Analyzing segment {done}/{total}: {seg_id}",
-            }
-
+            
             if not seg_text.strip():
                 tag = SpeechTag(
                     segment_id=seg_id,
@@ -311,12 +306,9 @@ class CharacterAnalyzer:
                     emotion_instruction=EMOTION_INSTRUCTIONS_FR["neutral"],
                 )
                 all_tags[seg_id] = tag
-                continue
-
-            seg_start = time.time()
-            tag = self._analyze_single_segment(seg_id, seg_text, language)
-            seg_elapsed = time.time() - seg_start
-            all_tags[seg_id] = tag
+            else:
+                tag = self._analyze_single_segment(seg_id, seg_text, language)
+                all_tags[seg_id] = tag
 
             if tag.character_name:
                 if tag.character_name not in self._characters:
@@ -325,8 +317,8 @@ class CharacterAnalyzer:
                 if tag.character_name not in all_chars:
                     all_chars.append(tag.character_name)
 
-            # Print progress every 20 segments + final
-            if done % 20 == 0 or done == total:
+            # Print progress update every 10 segments + final
+            if done % 10 == 0 or done == total:
                 elapsed = time.time() - start_time
                 avg = elapsed / done
                 remaining = avg * (total - done)
@@ -334,32 +326,30 @@ class CharacterAnalyzer:
                 eta_s = int(remaining % 60)
                 pct = done / total * 100
                 
-                # Overwrite previous progress line
-                progress_str = (
-                    f"\r  [{done}/{total}] {pct:5.1f}%  |  "
-                    f"~{eta_m:02d}:{eta_s:02d} ETA  |  "
-                    f"{len(all_chars)} chars found  |  "
-                    f"avg {avg:.1f}s/seg   "
+                chars_str = ", ".join(all_chars[:8])
+                if len(all_chars) > 8:
+                    chars_str += f" +{len(all_chars)-8} more"
+                elif not chars_str:
+                    chars_str = "none yet"
+
+                progress_msg = (
+                    f"[{done}/{total}] {pct:5.1f}%  "
+                    f"ETA {eta_m:02d}:{eta_s:02d}  "
+                    f"{len(all_chars)} chars: {chars_str}"
                 )
-                sys.stdout.write(progress_str)
-                sys.stdout.flush()
-                
-                # Print character list on every 100 or at end
-                if done % 100 == 0 or done == total:
-                    chars_str = ", ".join(all_chars[:10])
-                    if len(all_chars) > 10:
-                        chars_str += f" (+{len(all_chars)-10} more)"
-                    print(f"\n    Characters: {chars_str}")
+                print(progress_msg)
     
                 yield {
                     "status": "progress",
-                    "msg": f"{done}/{total} ({pct:.1f}%), ETA {eta_m:02d}:{eta_s:02d}, {len(all_chars)} chars",
+                    "msg": progress_msg,
                 }
 
-        # Final newline
-        print()
-        unique_chars = list(dict.fromkeys(all_chars))
         total_time = time.time() - start_time
+        unique_chars = list(dict.fromkeys(all_chars))
+        print(f"\nAnalysis complete! {len(all_chars)} characters in {total_time:.0f}s")
+        for cn in unique_chars:
+            print(f"  - {cn}: {len(self._characters[cn])} segments")
+        
         logger.info(
             f"Analysis complete: {len(all_tags)} segments, "
             f"{len(unique_chars)} characters in {total_time:.0f}s"
