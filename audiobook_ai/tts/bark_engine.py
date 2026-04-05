@@ -134,9 +134,7 @@ class BarkEngine:
         except Exception as e:
             logger.error(f"Failed to load Bark models: {e}")
             raise RuntimeError(
-                f"Failed to load Bark. Install:\n"
-                f"pip install git+https://github.com/suno-ai/bark.git\n"
-                f"Error: {e}"
+                f"Failed to load Bark. Install: pip install suno-bark\nError: {e}"
             )
 
     @staticmethod
