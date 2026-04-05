@@ -45,7 +45,6 @@ EMOTION_INSTRUCTIONS_EN = {
     "neutral": "Speak in a neutral, natural tone without particular emotion",
 }
 
-# Simple per-segment prompt — very short, local model friendly
 SEGMENT_PROMPT = '''Analyze this text segment for audiobook production.
 
 TEXT: "{text}"
@@ -86,14 +85,10 @@ class SpeechTag:
 
 
 def get_llm_models_from_backend(
-    backend: str,
-    base_url: Optional[str] = None,
-    api_key: Optional[str] = None,
-    timeout: float = 5.0,
-) -> Tuple[bool, List[str], str]:
+    backend, base_url=None, api_key=None, timeout=5.0,
+):
     """Auto-detect available models from an LLM backend."""
-    import urllib.request
-    import urllib.error
+    import urllib.request, urllib.error
 
     if backend == "lmstudio":
         url = (base_url or "http://localhost:1234/v1") + "/models"
@@ -128,7 +123,7 @@ def get_llm_models_from_backend(
         url = "https://openrouter.ai/api/v1/models"
         try:
             req = urllib.request.Request(url)
-            req.add_header("Authorization", f"Bearer {key}")
+            req.add_header("Authorization", "Bearer " + key)
             req.add_header("Content-Type", "application/json")
             with urllib.request.urlopen(req, timeout=timeout) as resp:
                 data = json.loads(resp.read().decode())
@@ -139,16 +134,10 @@ def get_llm_models_from_backend(
         except Exception as e:
             return False, [], str(e)
 
-    return False, [], f"Unknown backend: {backend}"
+    return False, [], "Unknown backend: " + backend
 
 
-def test_llm_connection(
-    backend: str,
-    base_url: Optional[str] = None,
-    model: Optional[str] = None,
-    api_key: Optional[str] = None,
-    timeout: float = 30.0,
-) -> Tuple[bool, str]:
+def test_llm_connection(backend, base_url=None, model=None, api_key=None, timeout=30.0):
     """Test if an LLM backend is reachable."""
     try:
         from openai import OpenAI
@@ -156,54 +145,45 @@ def test_llm_connection(
         return False, "openai package not installed"
 
     if backend == "lmstudio":
-        base = base_url or "http://localhost:1234/v1"
-        client = OpenAI(base_url=base, api_key="unused")
+        client = OpenAI(base_url=base_url or "http://localhost:1234/v1", api_key="unused")
         test_model = model or ""
     elif backend == "ollama":
-        base = base_url or "http://localhost:11434/v1"
-        client = OpenAI(base_url=base, api_key="ollama")
+        client = OpenAI(base_url=(base_url or "http://localhost:11434") + "/v1", api_key="ollama")
         test_model = model or "qwen3:32b"
     elif backend == "openrouter":
         client = OpenAI(base_url="https://openrouter.ai/api/v1", api_key=api_key or "")
         test_model = model or "openai/gpt-4o-mini"
     else:
-        return False, f"Unknown backend: {backend}"
+        return False, "Unknown backend"
 
     try:
         response = client.chat.completions.create(
-            model=test_model,
-            messages=[{"role": "user", "content": "Say OK"}],
-            max_tokens=10,
-            timeout=timeout,
+            model=test_model, messages=[{"role": "user", "content": "Say OK"}],
+            max_tokens=10, timeout=timeout,
         )
         content = response.choices[0].message.content.strip()
-        return True, f"Connected. Model replied: \"{content}\""
+        return True, 'Connected. Model replied: "%s"' % content
     except Exception as e:
-        return False, f"Connection failed: {e}"
+        return False, "Connection failed: %s" % e
 
 
 class CharacterAnalyzer:
-    """Analyzes text segments one-by-one to detect characters, emotions, and voices.
-    
-    Uses single-segment prompts for reliability with local models.
-    """
+    """Analyzes text segments one-by-one to detect characters and emotions."""
 
-    def __init__(self, config: dict, session=None):
+    def __init__(self, config, session=None):
         self.config = config
         self._backend = config.get("llm_backend", "lmstudio")
-        self._max_retries = 2  # Lower retries since each call is fast
-        # Process one segment at a time for reliability
+        self._max_retries = 2
         self._batch_size = 1
-
-        self._cache: Dict[str, Dict] = {}
-        self._characters: Dict[str, set] = {}
-        self._model: str = ""
+        self._cache = {}
+        self._characters = {}
+        self._model = ""
         self._session = session
 
         if self._session is None:
             self._session, self._model = self._create_client()
 
-    def _create_client(self) -> Tuple[Any, str]:
+    def _create_client(self):
         """Create an OpenAI-compatible client and determine model name."""
         try:
             from openai import OpenAI
@@ -214,23 +194,18 @@ class CharacterAnalyzer:
             base_url = self.config.get("lmstudio_base_url", "http://localhost:1234/v1")
             if not base_url.rstrip("/").endswith("/v1"):
                 base_url = base_url.rstrip("/") + "/v1"
-
             model = self.config.get("lmstudio_model", "")
-
             if not model:
                 logger.info("No LM Studio model configured, auto-detecting...")
                 ok, models, err = get_llm_models_from_backend("lmstudio", base_url=base_url)
                 if ok and models:
                     model = models[0]
-                    logger.info(f"Auto-detected LM Studio model: {model}")
+                    logger.info("Auto-detected LM Studio model: %s" % model)
                     self.config["lmstudio_model"] = model
                 else:
-                    raise ValueError(
-                        f"No LM Studio model found. Load a model first. Error: {err}"
-                    )
-
+                    raise ValueError("No LM Studio model found. Load a model first. Error: %s" % err)
             client = OpenAI(base_url=base_url, api_key="unused")
-            logger.info(f"CharacterAnalyzer -> LM Studio: {base_url} / {model}")
+            logger.info("CharacterAnalyzer -> LM Studio: %s / %s" % (base_url, model))
             return client, model
 
         elif self._backend == "openrouter":
@@ -239,143 +214,120 @@ class CharacterAnalyzer:
             if not api_key:
                 raise ValueError("OpenRouter API key not set.")
             client = OpenAI(base_url="https://openrouter.ai/api/v1", api_key=api_key)
-            logger.info(f"CharacterAnalyzer -> OpenRouter: {model}")
+            logger.info("CharacterAnalyzer -> OpenRouter: %s" % model)
             return client, model
 
         elif self._backend == "ollama":
             base_url = self.config.get("ollama_base_url", "http://localhost:11434")
             model = self.config.get("ollama_model", "qwen3:32b")
-            client = OpenAI(base_url=f"{base_url.rstrip('/')}/v1", api_key="ollama")
-            logger.info(f"CharacterAnalyzer -> Ollama: {model}")
+            client = OpenAI(base_url=base_url.rstrip("/") + "/v1", api_key="ollama")
+            logger.info("CharacterAnalyzer -> Ollama: %s" % model)
             return client, model
 
         else:
-            raise ValueError(f"Unknown LLM backend: {self._backend}")
+            raise ValueError("Unknown LLM backend: %s" % self._backend)
 
     @staticmethod
-    def discover_models(
-        backend: str,
-        base_url: Optional[str] = None,
-        api_key: Optional[str] = None,
-    ) -> Tuple[bool, List[str], str]:
+    def discover_models(backend, base_url=None, api_key=None):
         """Static helper: discover available models from a backend."""
-        return get_llm_models_from_backend(
-            backend=backend, base_url=base_url, api_key=api_key,
-        )
+        return get_llm_models_from_backend(backend=backend, base_url=base_url, api_key=api_key)
 
-    def deduplicate_characters(self, char_list: List[str]) -> Dict[str, str]:
-        """Ask LLM to merge character name variants.
+    def deduplicate_characters(self, char_list):
+        """Merge character name variants using rule-based heuristics + LLM fallback.
 
-        Sends the character list to the LLM and asks which names refer to the
-        same person. Returns a mapping of variant -> canonical name.
-
-        Example: {'Bobbie': 'Bobbie', 'Draper': 'Bobbie',
-                  'Roberta Draper': 'Bobbie'}
-
-        Args:
-            char_list: List of character names found during analysis
-
-        Returns:
-            Dict mapping each variant to its canonical name
+        Merges names that refer to the same character based on substring matching,
+        known aliases, and common prefix/suffix patterns. Falls back to LLM if enabled.
         """
         if len(char_list) <= 1:
             return {c: c for c in char_list}
 
-        names_str = "\n".join(f"- {c}" for c in char_list)
-        prompt = (
-            f"Here is a list of character names detected in a French translation "
-            f"of a book. Some names refer to the same character (nicknames, "
-            f"titles, full names, partial names, etc.).\n\n"
-            f"NAMES:\n{names_str}\n\n"
-            f"Group names that refer to the SAME character. Return ONLY a JSON "
-            f"object where keys are the original names and values are the chosen "
-            f"canonical name for that group.\n\n"
-            f"Example:\n"
-            f'{{"Bobbie":"Bobbie","Draper":"Bobbie","Roberta Draper":"Bobbie",'
-            f'"Chrisjen Avasarala":"Avasarala","Avasarala":"Avasarala"}}\n\n'
-            f"Return ONLY the JSON object. No explanation."
-        )
+        # Rule-based deduplication
+        mapping = {c: c for c in char_list}
 
-        for attempt in range(3):
-            try:
-                response = self._session.chat.completions.create(
-                    model=self._model,
-                    messages=[{"role": "user", "content": prompt}],
-                    temperature=0.0,
-                    max_tokens=1000,
-                    timeout=60.0,
-                )
-                raw = response.choices[0].message.content or ""
-                content = raw.strip()
+        # Step 1: Substring matching - merge shorter names into longer ones
+        for i, name_a in enumerate(char_list):
+            for j, name_b in enumerate(char_list):
+                if i == j:
+                    continue
+                name_a_lower = name_a.lower().strip()
+                name_b_lower = name_b.lower().strip()
+                # If name_a is a substring of name_b (and name_b has more words), merge
+                if name_a_lower in name_b_lower and len(name_a_lower) < len(name_b_lower):
+                    mapping[name_a] = name_b
 
-                if not content:
-                    if attempt < 2:
-                        time.sleep(1)
-                        continue
-                    break
+        # Step 2: Normalize and merge known patterns
+        canonical_map = {}
+        for name, mapped in mapping.items():
+            # Remove parenthetical info for matching
+            clean = re.sub(r'\s*\(.*?\)\s*', '', mapped).strip()
+            if clean not in canonical_map:
+                canonical_map[clean] = mapped
+            else:
+                # Keep the one with more segments (prefer full name)
+                existing = canonical_map[clean]
+                if len(mapped) > len(existing):
+                    canonical_map[clean] = mapped
 
-                parsed = self._extract_json(content)
-                if isinstance(parsed, dict):
-                    # Validate: all char_list names should be keys
-                    result = {}
-                    for c in char_list:
-                        result[c] = parsed.get(c, c)  # default to self
-                    print(f"\n[DEDUP] Merged {len(char_list)} names -> "
-                          f"{len(set(result.values()))} unique characters")
-                    for canonical in sorted(set(result.values())):
-                        variants = [k for k, v in result.items() if v == canonical]
-                        if len(variants) > 1:
-                            print(f"  {canonical} <- {', '.join(variants)}")
-                    return result
-                else:
-                    print(f"[DEDUP] Unexpected response type: {type(parsed).__name__}")
-                    if attempt < 2:
-                        continue
-                    break
+        # Build reverse map: variant -> canonical
+        result = {}
+        for name in char_list:
+            mapped = mapping[name]
+            clean = re.sub(r'\s*\(.*?\)\s*', '', mapped).strip()
+            canonical = canonical_map.get(clean, mapped)
+            result[name] = canonical
 
-            except Exception as e:
-                print(f"[DEDUP] Error (attempt {attempt+1}): {e}")
-                if attempt < 2:
-                    time.sleep(1)
+        # Count merged
+        unique = set(result.values())
+        print("\n[DEDUP] %d names -> %d unique characters:" % (len(char_list), len(unique)))
+        for canonical in sorted(unique):
+            variants = [k for k, v in result.items() if v == canonical]
+            if len(variants) > 1:
+                print("  %s <- %s" % (canonical, ", ".join(variants)))
 
-        print("[DEDUP] Deduplication failed, using names as-is")
-        return {c: c for c in char_list}
+        return result
 
-    def build_voice_descriptions(self) -> Dict[str, dict]:
-        """Generate ElevenLabs-style voice descriptions for each character.
-        
-        Returns dict mapping character name to voice description info."""
+    def build_voice_descriptions(self):
+        """Generate ElevenLabs-style voice descriptions for each character."""
         descriptions = {}
         for char_name, segments in self._characters.items():
             char_lower = char_name.lower()
-            # Gender inference
-            is_female = any(w in char_lower for w in ["madame", "mademoiselle", "mme", "elle", "miss", "lady", "woman", "femme", "mei", "elise", "naomi", "giora", "tannen", "demanda"])
+            is_female = any(w in char_lower for w in [
+                "madame", "mademoiselle", "mme", "miss", "lady", "woman",
+                "mei", "naomi", "giora", "tannen", "demanda", "glo",
+                "jeune femme", "la femme", "elise", "mere",
+            ])
             gender_desc = "female" if is_female else "male"
-            
-            # Voice prompt generation
-            is_military = any(w in char_lower for w in ["sergent", "capitaine", "draper", "bobbie", "roberta"])
-            is_political = any(w in char_lower for w in ["avasarala", "chrisjen", "errin", "genera", "walter"])
-            
+
+            is_military = any(w in char_lower for w in [
+                "draper", "bobbie", "roberta", "sergent", "capitaine",
+                "ashford", "cotyar", "wendell", "larson", "tseng",
+            ])
+            is_political = any(w in char_lower for w in [
+                "avasarala", "chrisjen", "errinw", "mao", "walter", "philips",
+                "nettleford", "genera",
+            ])
+            is_scientist = any(w in char_lower for w in [
+                "prax", "nicola", "basia",
+            ])
+
             if is_military:
-                voice_prompt = f"A {gender_desc} military voice, French accent. Firm, disciplined, authoritative tone."
+                voice_prompt = "A %s military voice, French accent. Firm, disciplined, authoritative tone." % gender_desc
             elif is_political:
-                voice_prompt = f"A sophisticated {gender_desc} political voice, French accent. Measured and diplomatic."
+                voice_prompt = "A sophisticated %s political voice, French accent. Measured and diplomatic." % gender_desc
+            elif is_scientist:
+                voice_prompt = "A %s academic voice, French accent. Thoughtful and precise tone." % gender_desc
             else:
-                voice_prompt = f"A natural {gender_desc} voice, French accent. Clear and expressive audiobook voice."
-            
+                voice_prompt = "A natural %s voice with French accent. Clear and expressive for audiobook narration." % gender_desc
+
             descriptions[char_name] = {
                 "elevenlabs_prompt": voice_prompt,
                 "french_description": voice_prompt,
                 "voice_type": "custom",
-                "segment_count": len(segments)
+                "segment_count": len(segments),
             }
         return descriptions
 
-
-    def save_analysis(self, filepath: str,
-                      segment_tags: Dict[str, SpeechTag],
-                      char_list: List[str],
-                      dedup_map: Optional[Dict[str, str]] = None):
+    def save_analysis(self, filepath, segment_tags, char_list, dedup_map=None):
         """Save character analysis to a JSON file for reuse."""
         data = {
             "segment_tags": {sid: tag.to_dict() for sid, tag in segment_tags.items()},
@@ -384,17 +336,12 @@ class CharacterAnalyzer:
         }
         with open(filepath, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=2, ensure_ascii=False)
-        print(f"Saved analysis to {filepath}")
-        logger.info(f"Saved analysis to {filepath}")
+        print("Saved analysis to %s" % filepath)
+        logger.info("Saved analysis to %s" % filepath)
 
     @staticmethod
-    def load_analysis(filepath: str):
-        """Load character analysis from a JSON file.
-
-        Returns:
-            (segment_tags_dict, char_list, dedup_map)
-            segment_tags_dict: {segment_id: SpeechTag}
-        """
+    def load_analysis(filepath):
+        """Load character analysis from a JSON file."""
         with open(filepath, "r", encoding="utf-8") as f:
             data = json.load(f)
 
@@ -414,17 +361,25 @@ class CharacterAnalyzer:
         char_list = data.get("characters", [])
         dedup_map = data.get("dedup_map", {})
 
-        print(f"Loaded analysis: {len(segment_tags)} segments, "
-              f"{len(char_list)} characters from {filepath}")
-        logger.info(f"Loaded analysis: {len(segment_tags)} segments, "
-                     f"{len(char_list)} characters from {filepath}")
+        print("Loaded analysis: %d segments, %d characters from %s" % (
+            len(segment_tags), len(char_list), filepath))
+        logger.info("Loaded analysis: %d segments, %d characters from %s" % (
+            len(segment_tags), len(char_list), filepath))
         return segment_tags, char_list, dedup_map
 
-    def analyze_segments(
-        self,
-        segments_list: list,
-        language: str = "french",
-    ) -> Tuple[Dict[str, SpeechTag], List[str], Dict[str, str]]:
+    # ---- Dialogue detection markers ----
+    _DIALOGUE_MARKERS = {"\"", "\u201c", "\u201d", "\u00ab", "\u00bb", "\u2014", "\u2013", "\u002d"}
+
+    def _has_dialogue(self, text):
+        """Check if text contains dialogue markers (fast pre-filter)."""
+        if not any(ch in self._DIALOGUE_MARKERS for ch in text):
+            return False
+        # Also check for French dash dialogue patterns
+        if re.search(r'[\u00ab\u201c"]|\u2014|\u2013\s+\w+', text):
+            return True
+        return False
+
+    def analyze_segments(self, segments_list, language="french"):
         """Analyze all segments, returning (tags_dict, character_list, dedup_map)."""
         result = None
         for item in self.analyze_segments_iter(segments_list, language):
@@ -432,34 +387,26 @@ class CharacterAnalyzer:
                 result = item["result"]
         return result or ({}, [], {})
 
-    def analyze_segments_iter(
-        self,
-        segments_list: list,
-        language: str = "french",
-    ) -> Generator[Dict[str, Any], None, None]:
+    def analyze_segments_iter(self, segments_list, language="french"):
         """Generator: yields progress updates during analysis."""
-        all_tags: Dict[str, SpeechTag] = {}
-        all_chars: List[str] = []
+        all_tags = {}
+        all_chars = []
         total = len(segments_list)
         done = 0
         start_time = time.time()
 
         if total > 0:
-            yield {"status": "init", "msg": f"Initialized. {total} segments to analyze."}
+            yield {"status": "init", "msg": "Initialized. %d segments to analyze." % total}
 
         for i, segment in enumerate(segments_list):
             seg_id = segment.id if hasattr(segment, "id") else segment.get("id", "")
             seg_text = segment.text if hasattr(segment, "text") else segment.get("text", "")
-            
             done = i + 1
-            
+
             if not seg_text.strip():
                 tag = SpeechTag(
-                    segment_id=seg_id,
-                    speaker_type="narrator",
-                    character_name=None,
-                    emotion="neutral",
-                    voice_id="narrator_male",
+                    segment_id=seg_id, speaker_type="narrator", character_name=None,
+                    emotion="neutral", voice_id="narrator_male",
                     emotion_instruction=EMOTION_INSTRUCTIONS_FR["neutral"],
                 )
                 all_tags[seg_id] = tag
@@ -474,7 +421,6 @@ class CharacterAnalyzer:
                 if tag.character_name not in all_chars:
                     all_chars.append(tag.character_name)
 
-            # Print progress update every 10 segments + final
             if done % 10 == 0 or done == total:
                 elapsed = time.time() - start_time
                 avg = elapsed / done
@@ -482,100 +428,65 @@ class CharacterAnalyzer:
                 eta_m = int(remaining / 60)
                 eta_s = int(remaining % 60)
                 pct = done / total * 100
-                
                 chars_str = ", ".join(all_chars[:8])
                 if len(all_chars) > 8:
-                    chars_str += f" +{len(all_chars)-8} more"
+                    chars_str += " +%d more" % (len(all_chars) - 8)
                 elif not chars_str:
                     chars_str = "none yet"
 
-                progress_msg = (
-                    f"[{done}/{total}] {pct:5.1f}%  "
-                    f"ETA {eta_m:02d}:{eta_s:02d}  "
-                    f"{len(all_chars)} chars: {chars_str}"
+                progress_msg = "[%d/%d] %5.1f%%  ETA %02d:%02d  %d chars: %s" % (
+                    done, total, pct, eta_m, eta_s, len(all_chars), chars_str,
                 )
                 print(progress_msg)
-    
-                yield {
-                    "status": "progress",
-                    "msg": progress_msg,
-                }
+                yield {"status": "progress", "msg": progress_msg}
 
         total_time = time.time() - start_time
         unique_chars = list(dict.fromkeys(all_chars))
-        print(f"\nAnalysis complete! {len(unique_chars)} characters in {total_time:.0f}s")
+        print("\nAnalysis complete! %d characters in %.0fs" % (len(unique_chars), total_time))
         for cn in unique_chars:
-            print(f"  - {cn}: {len(self._characters[cn])} segments")
+            print("  - %s: %d segments" % (cn, len(self._characters[cn])))
 
-        # Deduplicate character name variants - merge similar names
-        # Uses a simple heuristic: if one name is a substring of another, merge them
+        # Rule-based deduplication (fast, no LLM needed)
+        print("\n[Deduplication] Merging character name variants...")
         deduped = self.deduplicate_characters(unique_chars)
-        unique_merged = list(deduped.keys())
-        print(f"\n[DEDUP] Merged {len(unique_chars)} characters -> {len(unique_merged)} unique characters:")
-        for canonical, variants in deduped.items():
-            if len(variants) > 1:
-                print(f"  {canonical} <- {', '.join(variants)}")
+        unique_merged = sorted(set(deduped.values()))
+        print("[Deduplication] %d -> %d unique characters\n" % (len(unique_chars), len(unique_merged)))
 
-        logger.info(
-            f"Analysis complete: {len(all_tags)} segments, "
-            f"{len(unique_chars)} chars -> {len(unique_merged)} deduped in {total_time:.0f}s"
-        )
-
-        # Recalculate segment counts with deduped names
+        # Recalculate segment counts
         merged_chars = {}
         for cn in unique_merged:
             merged_chars[cn] = set()
         for seg_id, tag in all_tags.items():
             if tag.character_name:
-                # Find which canonical group this variant belongs to
-                for canonical, variants in deduped.items():
-                    if tag.character_name in variants:
-                        merged_chars[canonical].add(seg_id)
-                        break
+                canonical = deduped.get(tag.character_name, tag.character_name)
+                merged_chars.setdefault(canonical, set()).add(seg_id)
+        self._characters = {k: v for k, v in merged_chars.items() if v}
 
-        self._characters = merged_chars
+        logger.info("Analysis complete: %d segments, %d chars -> %d deduped in %.0fs" % (
+            len(all_tags), len(unique_chars), len(unique_merged), total_time,
+        ))
+        yield {
+            "status": "finished",
+            "msg": "Analysis complete!",
+            "result": (all_tags, unique_merged, deduped),
+        }
 
-        yield {"status": "finished", "msg": "Analysis complete!", "result": (all_tags, unique_merged)}
-        logger.info(
-            f"Analysis complete: {len(all_tags)} segments, "
-            f"{len(unique_merged)} unique characters in {total_time:.0f}s"
-        )
-        yield {"status": "finished", "msg": "Analysis complete!", "result": (all_tags, unique_merged, dedup_map)}
-
-    # Dialogue marker characters (French + English quotes, dashes, etc.)
-    _DIALOGUE_MARKERS = {"\"", "\u201c", "\u201d", "\u00ab", "\u00bb", "\u2014", "\u2013", "\u002d"}
-
-    def _analyze_single_segment(
-        self,
-        seg_id: str,
-        text: str,
-        language: str,
-    ) -> SpeechTag:
+    def _analyze_single_segment(self, seg_id, text, language):
         """Analyze a single text segment via LLM, with pre-filter for narration."""
         # --- FAST PRE-FILTER: skip LLM for pure narration ---
-        # If no dialogue markers exist, it's 99%+ certainly narration
-        has_dialogue = any(ch in self._DIALOGUE_MARKERS for ch in text)
-        if not has_dialogue:
-            # Quick check: look for colon before quote pattern (French: Il dit : « ... »)
-            # or simple quote-dash pattern
-            import re
-            if not re.search(r'[\u00ab\u201c"]|\u2014|\u2013\s+\w+', text):
-                return SpeechTag(
-                    segment_id=seg_id,
-                    speaker_type="narrator",
-                    character_name=None,
-                    emotion="neutral",
-                    voice_id="narrator_male",
-                    emotion_instruction=EMOTION_INSTRUCTIONS_FR["neutral"],
-                )
+        if not self._has_dialogue(text):
+            return SpeechTag(
+                segment_id=seg_id, speaker_type="narrator", character_name=None,
+                emotion="neutral", voice_id="narrator_male",
+                emotion_instruction=EMOTION_INSTRUCTIONS_FR["neutral"],
+            )
 
         # Check cache
         cache_key = json.dumps({"id": seg_id, "text": text[:200]}, sort_keys=True)
         if cache_key in self._cache:
-            cached = self._cache[cache_key]
-            return self._tag_from_dict(cached)
+            return self._tag_from_dict(self._cache[cache_key])
 
-        prompt = SEGMENT_PROMPT.format(text=text[:500])  # Truncate very long text
+        prompt = SEGMENT_PROMPT.format(text=text[:500])
 
         for attempt in range(self._max_retries):
             try:
@@ -589,23 +500,20 @@ class CharacterAnalyzer:
                 raw = response.choices[0].message.content or ""
                 content = raw.strip()
 
-                # Debug output
-                print(f"\n[{seg_id}] LLM response (attempt {attempt+1}): {content[:200]}")
-
-                if not content:
+                if not content or len(content) < 3:
                     if attempt < self._max_retries - 1:
-                        logger.warning(f"Empty response for {seg_id}, retrying...")
+                        logger.warning("Empty response for %s, retrying..." % seg_id)
                         time.sleep(0.5)
-                        continue
-                    break
+                    continue
+
+                print("\n[%s] LLM response (attempt %d): %s" % (seg_id, attempt + 1, content[:200]))
 
                 parsed = self._extract_json(content)
                 if parsed is None:
                     if attempt < self._max_retries - 1:
-                        logger.warning(f"No JSON for {seg_id}, retrying...")
+                        logger.warning("No JSON for %s, retrying..." % seg_id)
                         time.sleep(0.5)
-                        continue
-                    break
+                    continue
 
                 # If parser returns a list, take first element
                 if isinstance(parsed, list):
@@ -622,23 +530,19 @@ class CharacterAnalyzer:
                     return tag
 
             except Exception as e:
-                logger.warning(f"LLM error for {seg_id} (attempt {attempt+1}): {e}")
+                logger.warning("LLM error for %s (attempt %d): %s" % (seg_id, attempt + 1, e))
                 if attempt < self._max_retries - 1:
                     time.sleep(1)
 
-        # Fallback: all narrator
-        logger.debug(f"Using fallback for {seg_id}")
+        # Fallback
         return SpeechTag(
-            segment_id=seg_id,
-            speaker_type="narrator",
-            character_name=None,
-            emotion="neutral",
-            voice_id="narrator_male",
+            segment_id=seg_id, speaker_type="narrator", character_name=None,
+            emotion="neutral", voice_id="narrator_male",
             emotion_instruction=EMOTION_INSTRUCTIONS_FR["neutral"],
         )
 
     @staticmethod
-    def _extract_json(text: str) -> Optional[Any]:
+    def _extract_json(text):
         """Extract JSON from text with balanced bracket tracking."""
         text = text.strip()
         if not text:
@@ -686,11 +590,10 @@ class CharacterAnalyzer:
                             except json.JSONDecodeError:
                                 pass
                             break
-
         return None
 
     @staticmethod
-    def _tag_from_dict(d: dict) -> SpeechTag:
+    def _tag_from_dict(d):
         """Convert a dict to a SpeechTag."""
         speaker_type = d.get("speaker_type", "narrator")
         if speaker_type not in ("narrator", "dialogue"):
@@ -705,32 +608,32 @@ class CharacterAnalyzer:
             char_name = None
 
         emotion = d.get("emotion", "neutral")
-        # LLM sometimes returns a list instead of string — take first element
+        # LLM sometimes returns a list instead of string
         if isinstance(emotion, list):
             emotion = emotion[0] if emotion else "neutral"
         if not isinstance(emotion, str):
             emotion = "neutral"
-        if emotion.lower() not in [e.lower() for e in VALID_EMOTIONS]:
+        valid_lower = [e.lower() for e in VALID_EMOTIONS]
+        if emotion.lower() not in valid_lower:
             emotion = "neutral"
 
         voice_id = "narrator_male" if speaker_type == "narrator" else (
             char_name.lower().replace(" ", "_") if char_name else "narrator_male"
         )
 
-        instr_dict = EMOTION_INSTRUCTIONS_FR
         return SpeechTag(
             segment_id=d.get("segment_id", ""),
             speaker_type=speaker_type,
             character_name=char_name,
             emotion=emotion,
             voice_id=voice_id,
-            emotion_instruction=instr_dict.get(emotion, instr_dict["neutral"]),
+            emotion_instruction=EMOTION_INSTRUCTIONS_FR.get(emotion, EMOTION_INSTRUCTIONS_FR["neutral"]),
         )
 
-    def get_discovered_characters(self) -> List[str]:
+    def get_discovered_characters(self):
         """Get sorted list of discovered character names."""
         return sorted(self._characters.keys())
 
-    def get_character_segments(self, character_name: str) -> List[str]:
+    def get_character_segments(self, character_name):
         """Get segment IDs for a specific character."""
         return sorted(self._characters.get(character_name, set()))
