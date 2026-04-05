@@ -63,6 +63,7 @@ class AudiobookGUI:
         self._chapter_titles = {}
         self._chapters_list = []
         self._log_messages = []
+        self._dedup_map = {}
 
     def _log(self, msg: str):
         """Add a log message."""
@@ -76,13 +77,20 @@ class AudiobookGUI:
         """Build the complete Gradio application."""
         with gr.Blocks(
             title="AIGUIBook - AI Audiobook Generator / Générateur de Livres Audio IA",
-            analytics_enabled=False,
+            theme=gr.themes.Soft(
+                primary_hue="violet",
+                secondary_hue="blue",
+                font=gr.themes.GoogleFont("Inter"),
+            ),
+            css="""
+            .log-box textarea {font-family: monospace !important; font-size: 12px !important;}
+            .progress-text {font-size: 18px !important; font-weight: bold !important;}
+            .status-badge {border-radius: 8px !important;}
+            """,
         ) as self.app:
-
             gr.Markdown(
-                "# AIGUIBook / Générateur de Livres Audio IA\n"
-                "### Transform your EPUB into an audiobook with AI voices\n"
-                "### Transformez votre EPUB en livre audio avec des voix IA"
+                "# AIGUIBook - AI Audiobook Generator\n"
+                "### Transform your EPUB into an audiobook with AI voices"
             )
 
             # Global state
@@ -94,7 +102,6 @@ class AudiobookGUI:
             })
 
             with gr.Tabs():
-                # ==================== TAB 1: Setup ====================
                 with gr.Tab("Setup / Configuration"):
                     with gr.Row():
                         with gr.Column(scale=1):
@@ -103,72 +110,12 @@ class AudiobookGUI:
                                 file_types=[".epub"],
                                 type="filepath",
                             )
-                            parse_btn = gr.Button(
-                                "Parse EPUB / Analyser EPUB",
-                                variant="primary",
-                                size="lg",
-                            )
-
-                        with gr.Column(scale=1):
-                            with gr.Group():
-                                gr.Markdown("### Book Info / Informations du Livre")
-                                book_title_display = gr.Textbox(
-                                    label="Title / Titre",
-                                    interactive=False,
-                                )
-                                book_author_display = gr.Textbox(
-                                    label="Author / Auteur",
-                                    interactive=False,
-                                )
-                                book_language_display = gr.Textbox(
-                                    label="Language / Langue",
-                                    interactive=False,
-                                )
-                                book_chapters_display = gr.Textbox(
-                                    label="Chapters / Chapitres",
-                                    interactive=False,
-                                )
-
-                    with gr.Row():
-                        with gr.Column():
-                            output_format_select = gr.Dropdown(
-                                choices=["m4b", "m4a", "flac"],
-                                value="m4b",
-                                label="Output Format / Format de Sortie",
-                            )
-                            language_select = gr.Dropdown(
-                                choices=["french", "english", "spanish", "german"],
-                                value="french",
-                                label="Primary Language / Langue Principale",
-                            )
-                            tts_model_select = gr.Dropdown(
-                                choices=[
-                                    "Qwen/Qwen3-TTS-12Hz-1.7B-Base",
-                                    "Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice",
-                                    "Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign",
-                                    "Qwen/Qwen3-TTS-12Hz-0.6B-Base",
-                                    "Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice",
-                                ],
-                                value="Qwen/Qwen3-TTS-12Hz-1.7B-Base",
-                                label="TTS Model / Modèle TTS",
-                            )
-
-                        with gr.Column():
-                            narrator_ref_input = gr.File(
-                                label="Narrator Reference Audio / Audio de Référence du Narrateur\n(.wav, .mp3, min 3s)",
-                                file_types=[".wav", ".mp3", ".ogg", ".flac"],
-                                type="filepath",
-                            )
-                            setup_default_voices_btn = gr.Button(
-                                "Create Default Voices / Créer Voix par Défaut",
-                            )
-                            voices_status_display = gr.Textbox(
-                                label="Voice Status / État des Voix",
-                                interactive=False,
-                                lines=4,
-                            )
 
                     parse_output = gr.Markdown("")
+
+                    analyse_btn = gr.Button("Run Character Analysis / Analyse Personnages", variant="primary")
+                    analysis_status = gr.Textbox(label="Analysis Status / État", interactive=False)
+                    character_list = gr.JSON(label="Characters and Suggestions / Personnages")
 
                     with gr.Row():
                         load_analysis_btn = gr.Button(
@@ -185,21 +132,64 @@ class AudiobookGUI:
                         interactive=False,
                     )
 
-                    analyse_btn = gr.Button("Run Character Analysis / Analyse Personnages", variant="primary")
-                    analysis_status = gr.Textbox(label="Analysis Status / État", interactive=False)
-                    character_list = gr.JSON(label="Characters and Suggestions / Personnages")
-
-                    analyse_btn.click(
-                        fn=self._on_run_analysis,
-                        inputs=[app_state],
-                        outputs=[analysis_status, character_list, app_state],
+                    parse_btn = gr.Button(
+                        "Parse EPUB / Analyser EPUB",
+                        variant="primary",
+                        size="lg",
                     )
 
-                    load_analysis_btn.click(
-                        fn=self._on_load_analysis,
-                        inputs=[analysis_file_input],
-                        outputs=[analysis_load_status, character_list, app_state],
-                    )
+                    with gr.Row():
+                        with gr.Column(scale=1):
+                            book_title_display = gr.Textbox(
+                                label="Title / Titre",
+                                interactive=False,
+                            )
+                            book_author_display = gr.Textbox(
+                                label="Author / Auteur",
+                                interactive=False,
+                            )
+                            book_language_display = gr.Textbox(
+                                label="Language / Langue",
+                                interactive=False,
+                            )
+                            book_chapters_display = gr.Textbox(
+                                label="Chapters / Chapitres",
+                                interactive=False,
+                            )
+
+                        with gr.Column(scale=1):
+                            output_format_select = gr.Dropdown(
+                                choices=["m4b", "m4a", "flac"],
+                                value="m4b",
+                                label="Output Format / Format de Sortie",
+                            )
+                            language_select = gr.Dropdown(
+                                choices=["french", "english", "spanish", "german"],
+                                value="french",
+                                label="Primary Language / Langue Principale",
+                            )
+                            tts_model_select = gr.Dropdown(
+                                choices=[
+                                    "Qwen/Qwen3-TTS-12Hz-1.7B-Base",
+                                    "Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice",
+                                    "Qwen/Qwen3-TTS-12Hz-0.6B-Base",
+                                ],
+                                value="Qwen/Qwen3-TTS-12Hz-1.7B-Base",
+                                label="TTS Model / Modèle TTS",
+                            )
+                            narrator_ref_input = gr.File(
+                                label="Narrator Reference Audio / Audio de Référence du Narrateur\n(.wav, .mp3, min 3s)",
+                                file_types=[".wav", ".mp3", ".ogg", ".flac"],
+                                type="filepath",
+                            )
+                            setup_default_voices_btn = gr.Button(
+                                "Create Default Voices / Créer Voix par Défaut",
+                            )
+                            voices_status_display = gr.Textbox(
+                                label="Voice Status / État des Voix",
+                                interactive=False,
+                                lines=4,
+                            )
 
                     parse_btn.click(
                         fn=self._on_parse_epub,
@@ -211,7 +201,16 @@ class AudiobookGUI:
                             parse_output, app_state,
                         ],
                     )
-
+                    analyse_btn.click(
+                        fn=self._on_run_analysis,
+                        inputs=[app_state],
+                        outputs=[analysis_status, character_list, app_state],
+                    )
+                    load_analysis_btn.click(
+                        fn=self._on_load_analysis,
+                        inputs=[analysis_file_input],
+                        outputs=[analysis_load_status, character_list, app_state],
+                    )
                     setup_default_voices_btn.click(
                         fn=self._on_setup_default_voices,
                         inputs=[],
@@ -242,7 +241,6 @@ class AudiobookGUI:
                                     visible=False,
                                 )
 
-                            # Character voice assignments rendered dynamically
                             with gr.Group():
                                 gr.Markdown("#### Character Voices / Voix des Personnages")
                                 voices_status = gr.Textbox(
@@ -283,7 +281,6 @@ class AudiobookGUI:
                                     type="filepath",
                                 )
 
-                            # Edge TTS voice sample generator
                             with gr.Group():
                                 gr.Markdown("### Free Voice Samples / Échantillons Voix Gratuits\nUses Microsoft Edge TTS (free, no API key)")
                                 sample_language = gr.Dropdown(
@@ -319,10 +316,6 @@ class AudiobookGUI:
                                 sample_audio_output = gr.Audio(
                                     label="Generated Sample / Échantillon Généré",
                                     type="filepath",
-                                )
-                                assign_sample_btn = gr.Button(
-                                    "Assign to Selected Character / Assigner au Personnage",
-                                    variant="secondary",
                                 )
 
                             with gr.Group():
@@ -371,9 +364,7 @@ class AudiobookGUI:
 
                 # ==================== TAB 3: Preview ====================
                 with gr.Tab("Preview / Aperçu"):
-                    gr.Markdown(
-                        "### Test TTS Generation / Tester la Synthèse Vocale"
-                    )
+                    gr.Markdown("### Test TTS Generation / Tester la Synthèse Vocale")
 
                     with gr.Row():
                         with gr.Column():
@@ -425,9 +416,7 @@ class AudiobookGUI:
 
                 # ==================== TAB 4: Generate ====================
                 with gr.Tab("Generate / Générer"):
-                    gr.Markdown(
-                        "### Full Audiobook Generation / Génération Complète du Livre Audio"
-                    )
+                    gr.Markdown("### Full Audiobook Generation / Génération Complète du Livre Audio")
 
                     with gr.Row():
                         with gr.Column():
@@ -490,7 +479,6 @@ class AudiobookGUI:
                         elem_classes=["log-box"],
                     )
 
-                    # Button event handlers for Start/Pause/Resume/Stop
                     start_btn.click(
                         fn=self._on_start_generation,
                         inputs=[preview_only_check, no_validation_check,
@@ -564,7 +552,6 @@ class AudiobookGUI:
                                 value="lmstudio",
                                 label="LLM Backend / Moteur LLM",
                             )
-                            # LM Studio section (default visible)
                             with gr.Row(equal_height=True):
                                 lmstudio_url_field = gr.Textbox(
                                     label="LM Studio URL",
@@ -586,7 +573,6 @@ class AudiobookGUI:
                                 allow_custom_value=True,
                             )
 
-                            # Connection test row
                             with gr.Row(equal_height=True):
                                 test_llm_btn = gr.Button(
                                     "Test Connection / Tester Connexion",
@@ -667,24 +653,18 @@ class AudiobookGUI:
 
             return self.app
 
-    def _on_parse_epub(
-        self, epub_path, language, tts_model, narrator_ref,
-    ):
+    def _on_parse_epub(self, epub_path, language, tts_model, narrator_ref):
         """Handle EPUB upload and parsing."""
         if not epub_path:
-            return "", "", "", "", "Error: No EPUB file selected", {}, ""
+            return "", "", "", "", "Error: No EPUB file selected", {}
 
         try:
             self._log(f"Parsing EPUB: {epub_path}")
-
-            # Update config
             self.config.set("general", "language", language)
             self.config.set("tts", "model", tts_model)
-
             if narrator_ref:
                 self.config.set("voices", "narrator_ref", narrator_ref)
 
-            # Parse EPUB
             from audiobook_ai.core.epub_parser import EPUBParser
             parser = EPUBParser(epub_path)
             result = parser.parse()
@@ -692,14 +672,11 @@ class AudiobookGUI:
             metadata = result["metadata"]
             chapters = result.get("chapters", [])
             self._chapters_list = chapters
-
-            # Store parser reference
             self._epub_parser = parser
 
-            # Store chapter titles
             self._chapter_titles = {}
             for ch in chapters:
-                self._chapter_titles[ch.spine_order] = ch.title
+                self._chapter_titles[ch.get("spine_order", 0)] = ch.get("title", "Untitled")
 
             title = metadata.get("title", "Unknown")
             author = metadata.get("author", "Unknown")
@@ -708,7 +685,6 @@ class AudiobookGUI:
 
             self._log(f"Parsed: {title} by {author} ({num_chapters} chapters)")
 
-            # Create project
             work_dir = os.path.join(tempfile.gettempdir(), "aiguibook")
             output_dir = os.path.join(os.path.expanduser("~"), "audiobooks")
             os.makedirs(work_dir, exist_ok=True)
@@ -716,43 +692,104 @@ class AudiobookGUI:
 
             from audiobook_ai.core.project import BookProject
             self._project = BookProject(
-                book_title=title,
-                work_dir=work_dir,
-                output_dir=output_dir,
+                book_title=title, work_dir=work_dir, output_dir=output_dir,
             )
             self._project.create()
             self._project.book_metadata = metadata
             self._project.total_chapters = num_chapters
 
-            # Load saved state if any
-            saved = self._project.load_state()
-            if saved:
-                self._log(f"Loaded saved state: {len(saved.get('segment_status_map', {}))} segments")
-
-            state_data = {
-                "loaded": True,
-                "parsed": True,
-                "analyzed": False,
-                "voices_assigned": False,
-            }
-
             return (
                 title, author, lang,
                 f"{num_chapters} chapters / {num_chapters} chapitres",
-                f"Successfully parsed / Analysé avec succès:\n"
-                f"Title: {title}\nAuthor: {author}\n"
+                f"Successfully parsed:\nTitle: {title}\nAuthor: {author}\n"
                 f"Language: {lang}\nChapters: {num_chapters}",
-                state_data,
+                {"loaded": True, "parsed": True, "analyzed": False, "voices_assigned": False},
             )
 
         except Exception as e:
-            logger.error(f"EPUB parse error: {e}", exc_info=True)
-            self._log(f"ERROR: {e}")
-            return (
-                "", "", "", "",
-                f"Error parsing EPUB: {e}",
-                {"loaded": False, "parsed": False, "analyzed": False, "voices_assigned": False},
+            self._log(f"EPUB parse error: {e}")
+            return "", "", "", "", f"Error parsing EPUB: {e}", {
+                "loaded": False, "parsed": False, "analyzed": False, "voices_assigned": False,
+            }
+
+    def _on_refresh_models(self, backend, lmstudio_url, openrouter_api_key, ollama_base):
+        """Hit the LLM backend to discover available models."""
+        from audiobook_ai.analysis.character_analyzer import get_llm_models_from_backend
+
+        if backend == "lmstudio":
+            ok, models, err = get_llm_models_from_backend(
+                "lmstudio", base_url=lmstudio_url or "http://localhost:1234/v1",
             )
+            if ok and models:
+                return gr.update(choices=models, value=models[0]), f"Found {len(models)}: {', '.join(models)}"
+            return gr.update(choices=[], value=None), f"Failed: {err}"
+
+        elif backend == "ollama":
+            ok, models, err = get_llm_models_from_backend(
+                "ollama", base_url=ollama_base or "http://localhost:11434",
+            )
+            if ok and models:
+                return gr.update(choices=models, value=models[0]), f"Found {len(models)}: {', '.join(models)}"
+            return gr.update(choices=[], value=None), f"Failed: {err}"
+
+        elif backend == "openrouter":
+            key = openrouter_api_key or self.config.get("analysis", "openrouter_api_key", "")
+            if not key:
+                return gr.update(choices=[], value=None), "No OpenRouter API key set"
+            ok, models, err = get_llm_models_from_backend("openrouter", api_key=key)
+            if ok and models:
+                top = models[:30]
+                return gr.update(choices=top, value=top[0] if top else None), f"Found {len(models)}"
+            return gr.update(choices=[], value=None), f"Failed: {err}"
+
+        return gr.update(choices=[], value=None), f"Unknown backend: {backend}"
+
+    def _on_test_llm_connection(self, backend, selected_model, lmstudio_url,
+                                 openrouter_api_key, openrouter_model, ollama_model_val, ollama_base):
+        """Test LLM connection by sending a simple chat request."""
+        from audiobook_ai.analysis.character_analyzer import (
+            test_llm_connection,
+            get_llm_models_from_backend,
+        )
+
+        if backend == "lmstudio":
+            model = selected_model or self.config.get("analysis", "lmstudio_model", "")
+            if not model and lmstudio_url:
+                ok, models, _ = get_llm_models_from_backend("lmstudio", base_url=lmstudio_url)
+                if ok and models:
+                    model = models[0]
+            if not model:
+                return "No model selected. Click 'Refresh Models' first or type a model name."
+            base = lmstudio_url or "http://localhost:1234/v1"
+            if not base.rstrip("/").endswith("/v1"):
+                base = base.rstrip("/") + "/v1"
+            ok, msg = test_llm_connection("lmstudio", base_url=base, model=model, timeout=60.0)
+            if ok:
+                self.config.set("analysis", "lmstudio_model", model)
+                return f"SUCCESS (LM Studio): {msg}"
+            return f"FAILED (LM Studio): {msg}"
+
+        elif backend == "ollama":
+            model = selected_model or ollama_model_val or "qwen3:32b"
+            base = ollama_base or "http://localhost:11434"
+            ok, msg = test_llm_connection("ollama", base_url=base, model=model, timeout=60.0)
+            if ok:
+                self.config.set("analysis", "ollama_model", model)
+                return f"SUCCESS (Ollama): {msg}"
+            return f"FAILED (Ollama): {msg}"
+
+        elif backend == "openrouter":
+            model = selected_model or openrouter_model or "openai/gpt-4o-mini"
+            key = openrouter_api_key or self.config.get("analysis", "openrouter_api_key", "")
+            if not key:
+                return "No OpenRouter API key."
+            ok, msg = test_llm_connection("openrouter", model=model, api_key=key, timeout=60.0)
+            if ok:
+                self.config.set("analysis", "openrouter_model", model)
+                return f"SUCCESS (OpenRouter): {msg}"
+            return f"FAILED (OpenRouter): {msg}"
+
+        return f"Unknown backend: {backend}"
 
     def _on_run_analysis(self, state):
         """Generator-based analysis to provide live progress updates."""
@@ -792,13 +829,12 @@ class AudiobookGUI:
             self._analyzer = CharacterAnalyzer(cfg)
             lang = self.config.get("general", "language", "french")
 
-            # Use the iterator for live updates
             for item in self._analyzer.analyze_segments_iter(all_segs, language=lang):
                 status = item.get("status", "")
                 msg = item.get("msg", "")
 
-                if status in ("init", "progress"):
-                    # Update the status box with live progress
+                if status in ("init", "analyzing", "progress", "batch_start", "batch_done"):
+                    # Live progress update - show in status box
                     yield msg, [], state
                 elif status == "finished":
                     result = item["result"]
@@ -840,13 +876,8 @@ class AudiobookGUI:
                             self._dedup_map,
                         )
 
-                    self._log(
-                        f"Analysis complete. Found {len(chars)} unique characters."
-                    )
-                    final_msg = (
-                        f"Done! {len(chars)} unique characters, "
-                        f"{total_segs} segments. Saved to project dir."
-                    )
+                    self._log(f"Analysis complete. Found {len(chars)} unique characters.")
+                    final_msg = f"Done! {len(chars)} unique characters, {total_segs} segments. Saved to project dir."
                     yield final_msg, chars, state
 
         except Exception as e:
@@ -855,28 +886,18 @@ class AudiobookGUI:
             yield f"Error: {e}", [], state
 
     def _on_load_analysis(self, analysis_file_path):
-        """Load a previously saved character analysis from a JSON file.
-
-        Args:
-            analysis_file_path: Path to the analysis JSON file
-
-        Returns:
-            (status message, character list dict, updated state)
-        """
+        """Load a previously saved character analysis from a JSON file."""
         if not analysis_file_path:
             yield "No file selected.", [], {"loaded": False}
             return
 
         try:
             from audiobook_ai.analysis.character_analyzer import CharacterAnalyzer
-            segment_tags, char_list, dedup_map = CharacterAnalyzer.load_analysis(
-                analysis_file_path
-            )
+            segment_tags, char_list, dedup_map = CharacterAnalyzer.load_analysis(analysis_file_path)
             self._segment_tags = segment_tags
             self._discovered_chars = char_list
             self._dedup_map = dedup_map
 
-            # Build character suggestions
             chars = []
             tags = list(self._segment_tags.values())
             for cn in sorted(self._discovered_chars):
@@ -891,19 +912,40 @@ class AudiobookGUI:
                        self._dedup_map.get(t.character_name, t.character_name) == cn
                 )
                 chars.append({
-                    "character": cn,
-                    "suggested_voice": "narrator_male",
-                    "segments": seg_count,
-                    "emotions": emotion_list,
+                    "character": cn, "suggested_voice": "narrator_male",
+                    "segments": seg_count, "emotions": emotion_list,
                 })
 
             self._log(f"Loaded analysis: {len(char_list)} characters, {len(segment_tags)} segments")
             state = {"loaded": True, "parsed": True, "analyzed": True}
-            msg = f"Loaded {len(char_list)} characters from {analysis_file_path}"
-            yield msg, chars, state
+            yield f"Loaded {len(char_list)} characters from {analysis_file_path}", chars, state
         except Exception as e:
             self._log(f"Error loading analysis: {e}")
             yield f"Error: {e}", [], {"loaded": False}
+
+    def _refresh_character_voices(self, narrator_voice):
+        """Rebuild the character voices UI from discovered characters."""
+        if not self._discovered_chars:
+            return gr.update(), "No characters discovered yet. Run analysis first."
+
+        char_data = []
+        for cn in self._discovered_chars:
+            seg_count = len(self._analyzer.get_character_segments(cn))
+            emotions = list(set(
+                t.emotion for t in self._segment_tags.values()
+                if t.character_name == cn
+            ))
+            char_data.append({
+                "character": cn, "segments": seg_count,
+                "emotions": list(emotions),
+                "voice_assigned": "narrator_male", "has_reference": "No"
+            })
+
+        status = f"Found {len(self._discovered_chars)} characters:\n" + "\n".join(
+            f"  • {c['character']}: {c['segments']} segments, emotions={c['emotions']}"
+            for c in char_data
+        )
+        return gr.update(value=char_data), status
 
     def _on_setup_default_voices(self):
         """Create default voice profiles."""
@@ -914,10 +956,8 @@ class AudiobookGUI:
                 "voices",
             )
             os.makedirs(voices_dir, exist_ok=True)
-
             self._voice_manager = VoiceManager(voices_dir)
             created = self._voice_manager.create_default_voices()
-
             voices_info = self._voice_manager.list_voices()
             status = f"Created {len(created)} default voices:\n" + "\n".join(
                 f"  - {name}" for name in sorted(voices_info.keys())
@@ -927,7 +967,7 @@ class AudiobookGUI:
             self._log(f"Error creating default voices: {e}")
             return f"Error: {e}"
 
-    def _ensure_voices_initialized(self) -> Dict[str, dict]:
+    def _ensure_voices_initialized(self):
         """Ensure voice manager is initialized and return voice list."""
         if self._voice_manager is None:
             voices_dir = os.path.join(
@@ -942,32 +982,24 @@ class AudiobookGUI:
     def _on_create_voice_design(self, name, description, sample_text):
         """Create voice using VoiceDesign model."""
         if not name.strip():
-            return None, "Error: Voice name is required", self._voice_manager.list_voices() if self._voice_manager else {}
-
+            return None, "Error: Voice name required", []
         if not description.strip():
-            return None, "Error: Voice description is required", self._voice_manager.list_voices() if self._voice_manager else {}
+            return None, "Error: Voice description required", []
 
         try:
             self._log(f"Creating voice: {name} - {description}")
-
-            # Ensure voice manager exists
             voices = self._ensure_voices_initialized()
-
-            # Ensure TTS engine exists for voice generation
             if self._tts_engine is None or not self._tts_engine._initialized:
                 self._log("Initializing TTS engine for VoiceDesign...")
                 self._initialize_tts()
 
             voice_path = self._voice_manager.create_voice_with_design(
-                name=name.strip(),
-                description=description,
-                example_text=sample_text or "This is a test of the generated voice. Comment trouvez-vous cette voix ?",
+                name=name.strip(), description=description,
+                example_text=sample_text or "This is a test of the generated voice.",
                 tts_model=self._tts_engine,
             )
-
             voices = self._voice_manager.list_voices()
             return voice_path, f"Voice created: {name}", list(voices.keys())
-
         except Exception as e:
             self._log(f"Voice design error: {e}")
             return None, f"Error: {e}", self._voice_manager.list_voices() if self._voice_manager else []
@@ -982,76 +1014,72 @@ class AudiobookGUI:
                 ref_path = voices[voice_name].get("ref_audio", "")
                 if ref_path and os.path.exists(ref_path):
                     return ref_path
-            return None
         except Exception:
-            return None
+            pass
+        return None
 
-    def _refresh_character_voices(self, narrator_voice):
-        """Rebuild the character voices UI from discovered characters."""
-        import gradio as gr  # Import here as gr
-        
-        if not self._discovered_chars:
-            return gr.update(), "No characters discovered yet. Run analysis first."
-        
-        # For now, return a JSON summary
-        char_data = []
-        for cn in self._discovered_chars:
-            seg_count = len(self._analyzer.get_character_segments(cn))
-            emotions = list(set(
-                t.emotion for t in self._segment_tags.values()
-                if t.character_name == cn
-            ))
-            char_data.append({
-                "character": cn,
-                "segments": seg_count,
-                "emotions": list(emotions),
-                "voice_assigned": "narrator_male",
-                "has_reference": "No"
-            })
-        
-        status = f"Found {len(self._discovered_chars)} characters:\n" + "\n".join(
-            f"  • {c['character']}: {c['segments']} segments, emotions={c['emotions']}"
-            for c in char_data
-        )
-        
-        return gr.update(value=char_data), status
-    
     def _on_narrator_voice_change(self, narrator_voice):
         """Show/hide custom narrator ref input based on selection."""
         return gr.update(visible=(narrator_voice == "custom"))
 
+    def _on_generate_edge_tts_sample(self, voice_dropdown, sample_text, language):
+        """Generate a voice sample using Edge TTS (free, no API key needed)."""
+        import asyncio
+        import edge_tts
+
+        try:
+            if not sample_text or not sample_text.strip():
+                return None
+
+            voice_id = voice_dropdown.split(" (")[0] if " (" in voice_dropdown else voice_dropdown
+            output_mp3 = os.path.join(tempfile.gettempdir(), f"edge_tts_{int(time.time())}.mp3")
+
+            async def _gen():
+                comm = edge_tts.Communicate(sample_text, voice_id)
+                await comm.save(output_mp3)
+
+            asyncio.run(_gen())
+
+            from pydub import AudioSegment
+            audio = AudioSegment.from_mp3(output_mp3)
+            wav_path = output_mp3.replace(".mp3", ".wav")
+            audio.export(wav_path, format="wav")
+            if os.path.exists(output_mp3):
+                os.remove(output_mp3)
+
+            self._log(f"Edge TTS sample generated: {wav_path}")
+            return wav_path
+        except Exception as e:
+            self._log(f"Edge TTS error: {e}")
+            raise
+
     def _on_generate_preview(self, text, voice, language, emotion, speed):
         """Generate a TTS preview."""
-        if not text.strip():
+        if not text or not text.strip():
             return None
 
         try:
             self._log(f"Preview: voice={voice}, lang={language}, emotion={emotion}")
-
-            # Initialize TTS if needed
             if self._tts_engine is None or not self._tts_engine._initialized:
                 self._initialize_tts()
 
-            from audiobook_ai.analysis.character_analyzer import EMOTION_INSTRUCTIONS_FR, EMOTION_INSTRUCTIONS_EN
+            from audiobook_ai.analysis.character_analyzer import (
+                EMOTION_INSTRUCTIONS_FR, EMOTION_INSTRUCTIONS_EN,
+            )
             if language.lower() in ("french", "fr"):
                 emotion_instr = EMOTION_INSTRUCTIONS_FR.get(emotion, EMOTION_INSTRUCTIONS_FR["calm"])
             else:
                 emotion_instr = EMOTION_INSTRUCTIONS_EN.get(emotion, EMOTION_INSTRUCTIONS_EN["calm"])
 
-            # Get voice reference
             ref_audio, ref_text = "", ""
             if self._voice_manager:
                 ref_audio, ref_text = self._voice_manager.get_voice(voice)
 
             output_path = os.path.join(tempfile.gettempdir(), f"aiguibook_preview_{int(time.time())}.wav")
-
             path, dur = self._tts_engine.generate(
-                text=text,
-                language=language,
-                ref_audio=ref_audio or None,
-                ref_text=ref_text or None,
-                emotion_instruction=emotion_instr,
-                output_path=output_path,
+                text=text, language=language,
+                ref_audio=ref_audio or None, ref_text=ref_text or None,
+                emotion_instruction=emotion_instr, output_path=output_path,
             )
             self._log(f"Preview generated: {dur:.1f}s, {path}")
             return path
@@ -1063,7 +1091,6 @@ class AudiobookGUI:
         """Initialize TTS engine."""
         if self._tts_engine is not None and self._tts_engine._initialized:
             return
-
         try:
             self._log("Initializing TTS engine...")
             from audiobook_ai.tts.qwen_engine import TTSEngine
@@ -1079,58 +1106,37 @@ class AudiobookGUI:
             self._log(f"TTS init error: {e}")
             raise
 
-    def _on_start_generation(
-        self, preview_only, no_validation, narrator_voice,
-    ):
+    def _on_start_generation(self, preview_only, no_validation, narrator_voice):
         """Start audiobook generation pipeline."""
         self._generation_running = True
         self._generation_paused = False
         self._generation_cancelled = False
         self._log_messages.clear()
 
-        # Use gr.Progress for updates
-        progress = gr.Progress()
-
-        def update_progress(frac, msg):
-            """Update the Gradio progress."""
-            # This will be called from the thread
-
-        # Run in a thread to not freeze the UI
         result_holder = {
-            "progress": 0,
-            "status": "Starting...",
-            "est_time": "--:--",
-            "progress_text": "0/0",
-            "chapters": {},
-            "recent_audio": None,
-            "logs": "",
-            "error": None,
+            "progress": 0, "status": "Starting...",
+            "est_time": "--:--", "progress_text": "0/0",
+            "chapters": {}, "recent_audio": None, "logs": "", "error": None,
         }
 
         def run_pipeline():
             try:
                 self._run_pipeline_thread(
-                    preview_only=preview_only,
-                    no_validation=no_validation,
-                    narrator_voice=narrator_voice,
-                    result_holder=result_holder,
+                    preview_only=preview_only, no_validation=no_validation,
+                    narrator_voice=narrator_voice, result_holder=result_holder,
                 )
             except Exception as e:
-                logger.error(f"Pipeline error: {e}", exc_info=True)
                 result_holder["error"] = str(e)
                 result_holder["status"] = f"ERROR: {e}"
                 self._log(f"FATAL ERROR: {e}")
 
-        # Start generation thread
         gen_thread = threading.Thread(target=run_pipeline, daemon=True)
         gen_thread.start()
 
-        # Wait a moment and collect initial state
         start_time = time.time()
         while gen_thread.is_alive():
             time.sleep(0.5)
             elapsed = time.time() - start_time
-
             prog = result_holder.get("progress", 0)
             status = result_holder.get("status", "Running...")
             est = result_holder.get("est_time", "--:--")
@@ -1139,325 +1145,215 @@ class AudiobookGUI:
             recent = result_holder.get("recent_audio", None)
             logs = self._get_logs()
 
-            # Check for pause/cancel
             if self._generation_paused:
                 status = "PAUSED / EN PAUSE"
-                yield (
-                    prog, status, est, txt, chaps, recent, logs,
-                    gr.update(interactive=False),
-                    gr.update(interactive=False),
-                    gr.update(interactive=False),
-                    gr.update(visible=True, interactive=True),
-                )
+                yield (prog, status, est, txt, chaps, recent, logs,
+                       gr.update(interactive=False), gr.update(interactive=False),
+                       gr.update(interactive=False), gr.update(visible=True, interactive=True))
                 while self._generation_paused and not self._generation_cancelled:
                     time.sleep(0.5)
-                    if self._generation_cancelled:
-                        break
                 if self._generation_cancelled:
-                    yield (
-                        prog, "CANCELLED / ANNULÉ", "--:--", txt,
-                        chaps, recent, self._get_logs(),
-                        gr.update(interactive=True),
-                        gr.update(interactive=False),
-                        gr.update(interactive=False),
-                        gr.update(visible=False),
-                    )
+                    yield (prog, "CANCELLED / ANNULÉ", "--:--", txt, chaps, recent, self._get_logs(),
+                           gr.update(interactive=True), gr.update(interactive=False),
+                           gr.update(interactive=False), gr.update(visible=False))
                     return
 
             elapsed_mins = int(elapsed / 60)
             elapsed_secs = int(elapsed % 60)
-            if not est.startswith("--"):
-                est_time_display = est
-            else:
-                est_time_display = f"Elapsed: {elapsed_mins:02d}:{elapsed_secs:02d}"
+            est_time_display = est if not est.startswith("--") else f"Elapsed: {elapsed_mins:02d}:{elapsed_secs:02d}"
+            yield (prog, status, est_time_display, txt, chaps, recent, logs,
+                   gr.update(interactive=False), gr.update(interactive=True),
+                   gr.update(interactive=True), gr.update(visible=False))
 
-            yield (
-                prog, status, est_time_display, txt, chaps, recent, logs,
-                gr.update(interactive=False),
-                gr.update(interactive=True),
-                gr.update(interactive=True),
-                gr.update(visible=False),
-            )
-
-        # Thread finished
         self._generation_running = False
         if result_holder.get("error"):
-            yield (
-                result_holder.get("progress", 0),
-                f"FAILED: {result_holder['error']}",
-                "--:--",
-                result_holder.get("progress_text", "0/0"),
-                result_holder.get("chapters", {}),
-                result_holder.get("recent_audio", None),
-                self._get_logs(),
-                gr.update(interactive=True),
-                gr.update(interactive=False),
-                gr.update(interactive=False),
-                gr.update(visible=False),
-            )
+            yield (result_holder.get("progress", 0), f"FAILED: {result_holder['error']}",
+                   "--:--", result_holder.get("progress_text", "0/0"),
+                   result_holder.get("chapters", {}), result_holder.get("recent_audio", None),
+                   self._get_logs(), gr.update(interactive=True), gr.update(interactive=False),
+                   gr.update(interactive=False), gr.update(visible=False))
         else:
-            yield (
-                100,
-                "COMPLETE / TERMINÉ !",
-                "--:--",
-                result_holder.get("progress_text", "Done!"),
-                result_holder.get("chapters", {}),
-                result_holder.get("recent_audio", None),
-                self._get_logs(),
-                gr.update(interactive=True),
-                gr.update(interactive=False),
-                gr.update(interactive=False),
-                gr.update(visible=False),
-            )
+            yield (100, "COMPLETE / TERMINÉ !", "--:--",
+                   result_holder.get("progress_text", "Done!"),
+                   result_holder.get("chapters", {}), result_holder.get("recent_audio", None),
+                   self._get_logs(), gr.update(interactive=True), gr.update(interactive=False),
+                   gr.update(interactive=False), gr.update(visible=False))
 
     def _run_pipeline_thread(self, preview_only, no_validation, narrator_voice, result_holder):
         """Run the full audiobook pipeline in a thread."""
-        try:
-            # Check prerequisites
-            if not self._project:
-                result_holder["status"] = "Error: No project loaded. Parse an EPUB first."
-                return
+        if not self._project:
+            result_holder["status"] = "Error: No project loaded. Parse an EPUB first."
+            return
 
-            # Initialize TTS
-            self._log("Initializing TTS engine...")
-            result_holder["status"] = "Loading TTS model / Chargement du modèle..."
-            self._initialize_tts()
+        self._log("Initializing TTS engine...")
+        result_holder["status"] = "Loading TTS model / Chargement du modèle..."
+        self._initialize_tts()
+        self._ensure_voices_initialized()
 
-            # Initialize voice manager
-            self._ensure_voices_initialized()
+        if not no_validation:
+            from audiobook_ai.audio.validation import WhisperValidator
+            self._validator = WhisperValidator(device=self.config.get("tts", "device", "cuda"))
+            self._log("Whisper validator initialized")
 
-            # Initialize validator
-            if not no_validation:
-                from audiobook_ai.audio.validation import WhisperValidator
-                self._validator = WhisperValidator(
-                    device=self.config.get("tts", "device", "cuda"),
-                )
-                self._log("Whisper validator initialized")
+        self._log("Segmenting chapters...")
+        result_holder["status"] = "Segmenting text / Segmentation..."
+        from audiobook_ai.core.text_segmenter import TextSegmenter
+        segmenter = TextSegmenter(max_words=150, min_words=20)
+        segments_by_chapter = {}
+        total_segments = 0
 
-            # Segment chapters
-            self._log("Segmenting chapters...")
-            result_holder["status"] = "Segmenting text / Segmentation..."
+        if hasattr(self, '_epub_parser') and self._epub_parser:
+            chapters = self._epub_parser.chapters
+        else:
+            chapters = []
 
-            # We need the original Chapter objects, not the dict versions
-            from audiobook_ai.core.text_segmenter import TextSegmenter
+        for chapter in chapters:
+            segs = segmenter.segment_chapter(chapter.text, chapter.title, chapter.spine_order)
+            if segs:
+                segments_by_chapter[chapter.spine_order] = segs
+                chapter.segments = segs
+                self._project.set_chapter_segments(chapter.spine_order, [s.id for s in segs])
+                total_segments += len(segs)
 
-            # Re-parse chapters into proper objects
-            segments_by_chapter = {}
-            total_segments = 0
+        self._segmentation = segments_by_chapter
+        self._log(f"Total segments to generate: {total_segments}")
 
-            # Get chapters from parser if available, otherwise create from project
-            if hasattr(self, '_epub_parser') and self._epub_parser:
-                chapters = self._epub_parser.chapters
-            else:
-                chapters = []
+        if preview_only:
+            max_chapter = sorted(self._segmentation.keys())[:3]
+            self._segmentation = {k: v for k, v in self._segmentation.items() if k in max_chapter}
+            total_segments = sum(len(v) for v in self._segmentation.values())
+            self._log(f"Preview mode: limited to {total_segments} segments")
 
-            segmenter = TextSegmenter(max_words=150, min_words=20)
+        self._log("Analyzing characters and emotions...")
+        result_holder["status"] = "Analyzing characters / Analyse des personnages..."
+        all_segs = []
+        for chapter_idx, segs in sorted(self._segmentation.items()):
+            all_segs.extend(segs)
 
-            for chapter in chapters:
-                segs = segmenter.segment_chapter(
-                    chapter.text,
-                    chapter.title,
-                    chapter.spine_order,
-                )
-                if segs:
-                    segments_by_chapter[chapter.spine_order] = segs
-                    chapter.segments = segs
-                    # Register with project
-                    self._project.set_chapter_segments(
-                        chapter.spine_order,
-                        [s.id for s in segs],
-                    )
-                    total_segments += len(segs)
+        if all_segs:
+            from audiobook_ai.analysis.character_analyzer import CharacterAnalyzer
+            analysis_config = self.config.get_section("analysis")
+            self._analyzer = CharacterAnalyzer(analysis_config)
+            language = self.config.get("general", "language", "french")
+            self._segment_tags, self._discovered_chars = self._analyzer.analyze_segments(all_segs, language=language)
+            self._log(f"Analysis complete: {len(self._discovered_chars)} characters found")
 
-            self._segmentation = segments_by_chapter
-            self._log(f"Total segments to generate: {total_segments}")
+        self._setup_voice_assignments(narrator_voice)
 
-            # Limit to preview if requested
-            if preview_only:
-                max_chapter = sorted(self._segmentation.keys())[:3]
-                limited = {k: v for k, v in self._segmentation.items() if k in max_chapter}
-                self._segmentation = limited
-                total_segments = sum(len(v) for v in self._segmentation.values())
-                self._log(f"Preview mode: limited to {total_segments} segments")
+        self._log("Generating audio...")
+        result_holder["status"] = "Generating audio / Génération audio..."
+        generated = 0
+        failed = 0
+        start_time = time.time()
+        chapter_progress = {}
 
-            # Analyze characters
-            self._log("Analyzing characters and emotions...")
-            result_holder["status"] = "Analyzing characters / Analyse des personnages..."
+        from audiobook_ai.analysis.character_analyzer import EMOTION_INSTRUCTIONS_FR, EMOTION_INSTRUCTIONS_EN
+        lang_code = language.lower()
+        emotion_dict = EMOTION_INSTRUCTIONS_FR if lang_code == "french" else EMOTION_INSTRUCTIONS_EN
+        language_str = "French" if lang_code == "french" else "English"
 
-            all_segs = []
-            for chapter_idx, segs in sorted(self._segmentation.items()):
-                all_segs.extend(segs)
+        for chapter_idx in sorted(self._segmentation.keys()):
+            segs = self._segmentation[chapter_idx]
+            chapter = next((c for c in chapters if c.spine_order == chapter_idx), None)
+            ch_title = chapter.title if chapter else f"Chapter {chapter_idx + 1}"
+            ch_done = 0
+            ch_total = len(segs)
+            chapter_progress[f"Ch. {chapter_idx}"] = f"0/{ch_total}"
+            result_holder["chapters"] = dict(chapter_progress)
 
-            if all_segs:
-                from audiobook_ai.analysis.character_analyzer import CharacterAnalyzer
-                analysis_config = self.config.get_section("analysis")
-                self._analyzer = CharacterAnalyzer(analysis_config)
-                language = self.config.get("general", "language", "french")
-                self._segment_tags, self._discovered_chars = self._analyzer.analyze_segments(
-                    all_segs, language=language,
-                )
-                self._log(f"Analysis complete: {len(self._discovered_chars)} characters found")
-
-            # Set up voice assignments
-            self._setup_voice_assignments(narrator_voice)
-
-            # Generate audio per segment
-            result_holder["status"] = "Generating audio / Génération audio..."
-            generated_count = 0
-            start_time = time.time()
-            chapter_progress = {}
-
-            for chapter_idx in sorted(self._segmentation.keys()):
-                segs = self._segmentation[chapter_idx]
-                ch_done = 0
-                ch_total = len(segs)
-                chapter_progress[f"Ch. {chapter_idx}"] = f"0/{ch_total}"
-                result_holder["chapters"] = dict(chapter_progress)
-
-                for seg in segs:
+            for seg in segs:
+                if self._generation_cancelled:
+                    self._log("Generation cancelled by user")
+                    return
+                while self._generation_paused:
+                    time.sleep(1)
                     if self._generation_cancelled:
-                        self._log("Generation cancelled by user")
                         return
 
-                    while self._generation_paused:
-                        time.sleep(1)
-                        if self._generation_cancelled:
-                            return
+                tag = self._segment_tags.get(seg.id)
+                voice_id = "narrator"
+                emotion_instr = emotion_dict.get("calm", "Parlez d'un ton calme")
+                if tag:
+                    voice_id = tag.voice_id
+                    emotion_instr = tag.emotion_instruction
 
-                    if self._segment_tags.get(seg.id) is None:
-                        self._segment_tags[seg.id] = None
-
-                    self._project.set_segment_status(seg.id, "generating")
-
-                    # Get voice info
-                    voice_id = "narrator"
-                    emotion_instr = "Parlez d'un ton calme et naturel"
-
-                    tag = self._segment_tags.get(seg.id)
-                    if tag:
-                        voice_id = tag.voice_id
-                        emotion_instr = tag.emotion_instruction
+                ref_audio, ref_text = "", ""
+                if voice_id and self._voice_manager:
+                    if voice_id in self._voice_assignments:
+                        ref_audio, ref_text = self._voice_manager.get_voice(self._voice_assignments[voice_id])
                     else:
-                        voice_id = "narrator"
-
-                    # Get reference audio
-                    ref_audio, ref_text = "", ""
-                    if voice_id and self._voice_manager:
                         ref_audio, ref_text = self._voice_manager.get_voice(voice_id)
-                    if not ref_audio:
-                        # Fallback to narrator ref
-                        narrator_ref = self.config.get("voices", "narrator_ref", "")
-                        if narrator_ref and os.path.exists(narrator_ref):
-                            ref_audio = narrator_ref
+                if not ref_audio:
+                    narrator_ref = self.config.get("voices", "narrator_ref", "")
+                    if narrator_ref and os.path.exists(narrator_ref):
+                        ref_audio = narrator_ref
 
-                    # Get output path
-                    output_path = self._project.get_segment_audio_path(
-                        chapter_idx, seg.id, voice_id,
+                output_path = self._project.get_segment_audio_path(chapter_idx, seg.id, voice_id)
+                os.makedirs(os.path.dirname(output_path), exist_ok=True)
+
+                try:
+                    audio_path, duration = self._tts_engine.generate(
+                        text=seg.text, language=language_str,
+                        ref_audio=ref_audio or None, ref_text=ref_text or None,
+                        emotion_instruction=emotion_instr, output_path=output_path,
                     )
-                    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+                    self._project.set_segment_status(
+                        seg.id, "generated",
+                        metadata={"duration": duration, "audio_path": audio_path},
+                    )
 
-                    language_str = "French"
-                    if self.config.get("general", "language", "french") != "french":
-                        lang_map = {
-                            "english": "English",
-                            "french": "French",
-                            "spanish": "Spanish",
-                            "german": "German",
-                        }
-                        language_str = lang_map.get(
-                            self.config.get("general", "language", "french"),
-                            "French",
+                    if not no_validation and self._validator:
+                        self._project.set_segment_status(seg.id, "validating")
+                        val_result = self._validator.validate(
+                            audio_path, seg.text,
+                            language=self.config.get("general", "language", "french"),
+                            max_wer=self.config.get("validation", "max_wer", 15),
                         )
+                        if val_result.passed:
+                            self._project.set_segment_status(seg.id, "validated")
+                        else:
+                            self._project.set_segment_status(seg.id, "failed")
+                            self._log(f"Validation failed for {seg.id}: WER={val_result.wer:.1f}%")
 
-                    try:
-                        # Generate
-                        audio_path, duration = self._tts_engine.generate(
-                            text=seg.text,
-                            language=language_str,
-                            ref_audio=ref_audio or None,
-                            ref_text=ref_text or None,
-                            emotion_instruction=emotion_instr,
-                            output_path=output_path,
-                        )
+                    generated += 1
+                    ch_done += 1
+                    chapter_progress[f"Ch. {chapter_idx}"] = f"{ch_done}/{ch_total}"
+                    result_holder["chapters"] = dict(chapter_progress)
+                    result_holder["recent_audio"] = audio_path
+                except Exception as e:
+                    self._log(f"Error generating segment {seg.id}: {e}")
+                    self._project.set_segment_status(seg.id, "error")
+                    failed += 1
 
-                        self._project.set_segment_status(
-                            seg.id, "generated",
-                            metadata={"duration": duration, "audio_path": audio_path},
-                        )
+                done, total, pct = self._project.get_progress()
+                result_holder["progress"] = pct
+                result_holder["progress_text"] = f"{done}/{total} segments ({pct}%)"
+                elapsed = time.time() - start_time
+                if done > 0:
+                    est_total = elapsed / (done / total) if total > 0 else elapsed
+                    remaining = est_total - elapsed
+                    mins = int(remaining / 60)
+                    secs = int(remaining % 60)
+                    result_holder["est_time"] = f"~{mins:02d}:{secs:02d} remaining"
+                result_holder["status"] = f"Generating {seg.id} ({done}/{total})"
 
-                        # Validate
-                        if not no_validation and self._validator:
-                            self._project.set_segment_status(seg.id, "validating")
-                            result = self._validator.validate(
-                                audio_path, seg.text,
-                                language=self.config.get("general", "language", "french"),
-                                max_wer=self.config.get("validation", "max_wer", 15),
-                            )
-                            if result.passed:
-                                self._project.set_segment_status(seg.id, "validated")
-                            else:
-                                self._project.set_segment_status(seg.id, "failed")
-                                self._log(
-                                    f"Validation failed for {seg.id}: WER={result.wer:.1f}%"
-                                )
-
-                        generated_count += 1
-                        ch_done += 1
-                        chapter_progress[f"Ch. {chapter_idx}"] = f"{ch_done}/{ch_total}"
-                        result_holder["chapters"] = dict(chapter_progress)
-
-                        result_holder["recent_audio"] = audio_path
-
-                    except Exception as e:
-                        self._log(f"Error generating segment {seg.id}: {e}")
-                        self._project.set_segment_status(seg.id, "error")
-
-                    # Update progress
-                    done, total, pct = self._project.get_progress()
-                    result_holder["progress"] = pct
-                    result_holder["progress_text"] = f"{done}/{total} segments ({pct}%)"
-
-                    elapsed = time.time() - start_time
-                    if done > 0:
-                        est_total = elapsed / (done / total) if total > 0 else elapsed
-                        remaining = est_total - elapsed
-                        mins = int(remaining / 60)
-                        secs = int(remaining % 60)
-                        result_holder["est_time"] = f"~{mins:02d}:{secs:02d} remaining"
-
-                    result_holder["status"] = f"Generating {seg.id} ({done}/{total})"
-
-            # Assemble final audiobook
-            self._log("Assembling final audiobook...")
-            result_holder["status"] = "Assembling / Assemblage..."
-
-            try:
-                from audiobook_ai.audio.assembly import AudioAssembly
-                self._assembly = AudioAssembly(self._project, self.config)
-
-                # Assemble
-                output_path = self._assembly.assemble_full_m4b(
-                    chapter_titles=self._chapter_titles,
-                )
-                self._log(f"Final audiobook created: {output_path}")
-                result_holder["status"] = f"Complete! Output: {output_path}"
-                result_holder["progress"] = 100
-
-            except Exception as e:
-                self._log(f"Assembly error: {e}")
-                result_holder["status"] = f"Assembly error: {e}"
-                result_holder["error"] = str(e)
-
+        self._log("Assembling final audiobook...")
+        result_holder["status"] = "Assembling / Assemblage..."
+        try:
+            from audiobook_ai.audio.assembly import AudioAssembly
+            self._assembly = AudioAssembly(self._project, self.config)
+            output_path = self._assembly.assemble_full_m4b(chapter_titles=self._chapter_titles)
+            self._log(f"Final audiobook created: {output_path}")
+            result_holder["status"] = f"Complete! Output: {output_path}"
+            result_holder["progress"] = 100
         except Exception as e:
-            self._log(f"Pipeline fatal error: {e}")
+            self._log(f"Assembly error: {e}")
+            result_holder["status"] = f"Assembly error: {e}"
             result_holder["error"] = str(e)
-            result_holder["status"] = f"FATAL: {e}"
 
     def _setup_voice_assignments(self, narrator_voice: str):
         """Set up default voice assignments based on analysis."""
         self._voice_assignments = {}
-
-        # Narrator assignment
         if narrator_voice and narrator_voice != "single_voice":
             if narrator_voice.startswith("narrator_"):
                 self._voice_assignments["narrator"] = narrator_voice
@@ -1467,161 +1363,38 @@ class AudiobookGUI:
                     name = "narrator_custom"
                     self._voice_assignments["narrator"] = name
                     try:
-                        self._voice_manager.register_speaker(
-                            name, narrator_ref, ref_text=""
-                        )
+                        self._voice_manager.register_speaker(name, narrator_ref, ref_text="")
                     except Exception as e:
                         self._log(f"Warning: Could not register narrator voice: {e}")
         else:
-            # Single voice mode
             self._voice_assignments["narrator"] = "narrator"
             self._voice_assignments["single_voice"] = "narrator"
 
-        # Character assignments default to narrator
         for char_name in self._discovered_chars:
             voice_name = char_name.lower().replace(" ", "_")
-            self._voice_assignments[char_name] = voice_name
-
-            # Check if we have a voice for this character
             if self._voice_manager:
                 existing = self._voice_manager.get_voice(voice_name)
-                if not existing[0]:
-                    # No specific voice, will use narrator fallback
-                    self._voice_assignments[char_name] = "narrator"
+                self._voice_assignments[char_name] = voice_name if existing[0] else "narrator"
+            else:
+                self._voice_assignments[char_name] = "narrator"
 
         self._log(f"Voice assignments: {len(self._voice_assignments)} mappings")
 
-    # ==================== Settings Tab Handlers ====================
-
-    def _on_refresh_models(
-        self, backend, lmstudio_url, openrouter_api_key, ollama_base,
-    ):
-        """Hit the LLM backend to discover available models."""
-        from audiobook_ai.analysis.character_analyzer import get_llm_models_from_backend
-
-        if backend == "lmstudio":
-            ok, models, err = get_llm_models_from_backend(
-                "lmstudio", base_url=lmstudio_url or "http://localhost:1234/v1",
-            )
-            if ok and models:
-                return (
-                    gr.update(choices=models, value=models[0]),
-                    f"Found {len(models)} model(s): {', '.join(models)}",
-                )
-            return gr.update(choices=[], value=None), f"Failed: {err}"
-
-        elif backend == "ollama":
-            ok, models, err = get_llm_models_from_backend(
-                "ollama", base_url=ollama_base or "http://localhost:11434",
-            )
-            if ok and models:
-                return (
-                    gr.update(choices=models, value=models[0]),
-                    f"Found {len(models)} Ollama model(s): {', '.join(models)}",
-                )
-            return gr.update(choices=[], value=None), f"Failed: {err}"
-
-        elif backend == "openrouter":
-            if not openrouter_api_key and not self.config.get("analysis", "openrouter_api_key"):
-                return gr.update(choices=[], value=None), "No OpenRouter API key set"
-            key = openrouter_api_key or self.config.get("analysis", "openrouter_api_key", "")
-            ok, models, err = get_llm_models_from_backend(
-                "openrouter", api_key=key,
-            )
-            if ok and models:
-                top = models[:30]  # limit dropdown
-                return (
-                    gr.update(choices=top, value=top[0] if top else None),
-                    f"Found {len(models)} model(s). Showing top {len(top)}.",
-                )
-            return gr.update(choices=[], value=None), f"Failed: {err}"
-
-        return gr.update(choices=[], value=None), f"Unknown backend: {backend}"
-
-    def _on_test_llm_connection(
-        self, backend, selected_model, lmstudio_url,
-        openrouter_api_key, openrouter_model,
-        ollama_model_val, ollama_base,
-    ):
-        """Send a tiny test message to verify the LLM backend works."""
-        from audiobook_ai.analysis.character_analyzer import test_llm_connection
-
-        if backend == "lmstudio":
-            model = selected_model or self.config.get("analysis", "lmstudio_model", "")
-            if not model and lmstudio_url:
-                # Try auto-detect first
-                ok, models, _ = get_llm_models_from_backend(
-                    "lmstudio", base_url=lmstudio_url,
-                )
-                if ok and models:
-                    model = models[0]
-
-            if not model:
-                return "No model selected. Click 'Refresh Models' first or type a model name."
-
-            base = lmstudio_url or "http://localhost:1234/v1"
-            if not base.rstrip("/").endswith("/v1"):
-                base = base.rstrip("/") + "/v1"
-
-            ok, msg = test_llm_connection(
-                "lmstudio", base_url=base, model=model, timeout=60.0,
-            )
-            if ok:
-                # Save the working model
-                self.config.set("analysis", "lmstudio_model", model)
-                self.config.set("analysis", "lmstudio_base_url", lmstudio_url)
-                return f"SUCCESS (LM Studio): {msg}"
-            return f"FAILED (LM Studio): {msg}"
-
-        elif backend == "ollama":
-            model = selected_model or ollama_model_val or "qwen3:32b"
-            base = ollama_base or "http://localhost:11434"
-            ok, msg = test_llm_connection(
-                "ollama", base_url=base, model=model, timeout=60.0,
-            )
-            if ok:
-                self.config.set("analysis", "ollama_model", model)
-                return f"SUCCESS (Ollama): {msg}"
-            return f"FAILED (Ollama): {msg}"
-
-        elif backend == "openrouter":
-            model = selected_model or openrouter_model or "openai/gpt-4o-mini"
-            key = openrouter_api_key or self.config.get("analysis", "openrouter_api_key", "")
-            if not key:
-                return "No OpenRouter API key. Set it in the field above or env OPENROUTER_API_KEY."
-            ok, msg = test_llm_connection(
-                "openrouter", model=model, api_key=key, timeout=60.0,
-            )
-            if ok:
-                self.config.set("analysis", "openrouter_model", model)
-                return f"SUCCESS (OpenRouter): {msg}"
-            return f"FAILED (OpenRouter): {msg}"
-
-        return f"Unknown backend: {backend}"
-
-    def _on_save_settings(
-        self, batch_size, dtype, device,
-        val_enabled, max_wer, max_retries,
-        bitrate, crossfade, normalize,
-        llm_back,
-        lmstudio_url_val, lmstudio_model_val,
-        api_key, llm_model,
-        ollama_model_val, ollama_url_val,
-    ):
+    def _on_save_settings(self, batch_size, dtype, device, val_enabled, max_wer, max_retries,
+                          bitrate, crossfade, normalize, llm_back,
+                          lmstudio_url_val, lmstudio_model_val,
+                          api_key, llm_model, ollama_model_val, ollama_url_val):
         """Save all settings."""
         try:
             self.config.set("tts", "batch_size", int(batch_size))
             self.config.set("tts", "dtype", dtype)
             self.config.set("tts", "device", device)
-
             self.config.set("validation", "enabled", val_enabled)
             self.config.set("validation", "max_wer", int(max_wer))
             self.config.set("validation", "max_retries", int(max_retries))
-
             self.config.set("output", "bitrate", str(bitrate))
             self.config.set("output", "crossfade_duration", float(crossfade))
             self.config.set("output", "normalize_audio", normalize)
-
             self.config.set("analysis", "llm_backend", llm_back)
             self.config.set("analysis", "lmstudio_base_url", lmstudio_url_val)
             self.config.set("analysis", "lmstudio_model", lmstudio_model_val or "")
@@ -1630,7 +1403,6 @@ class AudiobookGUI:
             self.config.set("analysis", "openrouter_model", llm_model)
             self.config.set("analysis", "ollama_model", ollama_model_val)
             self.config.set("analysis", "ollama_base_url", ollama_url_val)
-
             self.config.save()
             return "Configuration saved / Configuration sauvegardee"
         except Exception as e:
@@ -1642,15 +1414,12 @@ class AudiobookGUI:
             batch = self.config.get("tts", "batch_size", 4)
             dtype = self.config.get("tts", "dtype", "bfloat16")
             device = self.config.get("tts", "device", "cuda")
-
             val_enabled = self.config.get("validation", "enabled", True)
             max_wer = self.config.get("validation", "max_wer", 15)
             max_retries_val = self.config.get("validation", "max_retries", 2)
-
             bitrate = self.config.get("output", "bitrate", "128k")
             crossfade = self.config.get("output", "crossfade_duration", 0.5)
             normalize = self.config.get("output", "normalize_audio", True)
-
             llm_backend_val = self.config.get("analysis", "llm_backend", "lmstudio")
             lmstudio_url_v = self.config.get("analysis", "lmstudio_base_url", "http://localhost:1234/v1")
             lmstudio_model_v = self.config.get("analysis", "lmstudio_model", "")
@@ -1659,80 +1428,41 @@ class AudiobookGUI:
             ollama_model_val = self.config.get("analysis", "ollama_model", "qwen3:32b")
             ollama_url_val = self.config.get("analysis", "ollama_base_url", "http://localhost:11434")
 
-            # Auto-detect models from the configured backend on load
-            model_choices = []
-            model_value = None
+            model_choices, model_value = [], None
             if llm_backend_val == "lmstudio":
-                ok, models, _ = get_llm_models_from_backend(
-                    "lmstudio", base_url=lmstudio_url_v,
-                )
+                from audiobook_ai.analysis.character_analyzer import get_llm_models_from_backend
+                ok, models, _ = get_llm_models_from_backend("lmstudio", base_url=lmstudio_url_v)
                 if ok and models:
-                    model_choices = models
-                    model_value = lmstudio_model_v or models[0]
+                    model_choices, model_value = models, lmstudio_model_v or models[0]
                     self.config.set("analysis", "lmstudio_model", model_value)
             elif llm_backend_val == "ollama":
-                ok, models, _ = get_llm_models_from_backend(
-                    "ollama", base_url=ollama_url_val,
-                )
+                from audiobook_ai.analysis.character_analyzer import get_llm_models_from_backend
+                ok, models, _ = get_llm_models_from_backend("ollama", base_url=ollama_url_val)
                 if ok and models:
-                    model_choices = models
-                    model_value = ollama_model_val or models[0]
+                    model_choices, model_value = models, ollama_model_val or models[0]
 
-            dropdown_update = gr.update(
-                choices=model_choices,
-                value=model_value,
-            )
-
-            return (
-                batch, dtype, device,
-                val_enabled, max_wer, max_retries_val,
-                bitrate, crossfade, normalize,
-                llm_backend_val,
-                api_key_val, llm_model_val,
-                ollama_model_val, ollama_url_val,
-                "Configuration loaded / Configuration chargee. Models auto-detected.",
-                dropdown_update,
-            )
+            return (batch, dtype, device, val_enabled, max_wer, max_retries_val,
+                    bitrate, crossfade, normalize, llm_backend_val,
+                    api_key_val, llm_model_val, ollama_model_val, ollama_url_val,
+                    "Configuration loaded. Models auto-detected.",
+                    gr.update(choices=model_choices, value=model_value))
         except Exception as e:
-            return (
-                4, "bfloat16", "cuda", True, 15, 2,
-                "128k", 0.5, True, "lmstudio",
-                "", "openai/gpt-4o-mini",
-                "qwen3:32b", "http://localhost:11434",
-                f"Error: {e}",
-                gr.update(choices=[], value=None),
-            )
+            return (4, "bfloat16", "cuda", True, 15, 2,
+                    "128k", 0.5, True, "lmstudio", "", "openai/gpt-4o-mini",
+                    "qwen3:32b", "http://localhost:11434",
+                    f"Error: {e}", gr.update(choices=[], value=None))
 
     def launch(self, port=7860, share=False, server_name="0.0.0.0", **kwargs):
-        """Launch the Gradio application.
-
-        Args:
-            port: Port to serve on
-            share: Create a public shareable link
-            server_name: Host to bind to
-        """
+        """Launch the Gradio application."""
         if self.app is None:
             self.build()
-
-        # Store theme/css for Gradio 6.0 launch() method
         css_text = """
             .log-box textarea {font-family: monospace !important; font-size: 12px !important;}
             .progress-text {font-size: 18px !important; font-weight: bold !important;}
             .status-badge {border-radius: 8px !important;}
         """
-        
         from gradio.themes import Soft, GoogleFont
-        theme = Soft(
-            primary_hue="violet",
-            secondary_hue="blue",
-            font=GoogleFont("Inter"),
-        )
-
+        theme = Soft(primary_hue="violet", secondary_hue="blue", font=GoogleFont("Inter"))
         self.app.queue()
-        self.app.launch(
-            theme=theme,
-            css=css_text,
-            server_name=server_name,
-            server_port=port,
-            share=share,
-        )
+        self.app.launch(theme=theme, css=css_text, server_name=server_name,
+                        server_port=port, share=share)

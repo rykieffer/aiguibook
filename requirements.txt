@@ -48,6 +48,7 @@ numpy
 # CLI
 rich
 click
+edge-tts
 
 # String comparison
 Levenshtein
