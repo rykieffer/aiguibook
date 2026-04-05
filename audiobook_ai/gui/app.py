@@ -1,7 +1,5 @@
 """
-AudiobookGUI v6 - Final Stable Release.
-Focus: Single Narrator with Emotion Acting (Qwen3-TTS).
-Includes Gradio 6.0 compatibility fixes.
+AudiobookGUI v6 - Critical Fixes for Gradio Argument Type Mismatches.
 """
 
 import gradio as gr
@@ -23,7 +21,6 @@ QWEN_VOICE_STYLES = {
     "clara": "Clara (Warm Female)",
 }
 
-
 class AudiobookGUI:
     def __init__(self, config):
         self.config = config
@@ -34,16 +31,15 @@ class AudiobookGUI:
         self.segments = []
         self.tags = {}
         self.characters = []
-        
         self.narrator_ref_path = None
 
     def build(self):
-        # Theme and CSS defined here, passed to launch() later for Gradio 6.0
         self.theme = gr.themes.Soft(primary_hue="violet", secondary_hue="blue")
         self.css = ".log-box textarea {font-family:monospace; font-size:12px;}"
 
         with gr.Blocks(title="AIGUIBook") as self.app:
             state = gr.State({"loaded": False, "parsed": False, "analyzed": False})
+            
             gr.Markdown("# AIGUIBook v6\n### EPUB to Audiobook with Emotional Voice Acting (Qwen3-TTS)")
             
             with gr.Tabs():
@@ -73,7 +69,7 @@ class AudiobookGUI:
                             status_load = gr.Textbox(label="Load Status", lines=2, interactive=False)
 
                 # ==========================
-                # TAB 2: VOICE STYLE
+                # TAB 2: VOICE STRATEGY
                 # ==========================
                 with gr.Tab("2. Voice Strategy"):
                     gr.Markdown("### 2. Configure Qwen3-TTS Voice")
@@ -142,22 +138,35 @@ class AudiobookGUI:
                     test_out = gr.Textbox(label="Status", interactive=False)
 
             # ==========================
-            # EVENTS
+            # EVENTS (Inputs and Outputs strictly aligned)
             # ==========================
             
             # 1. Analysis
+            # parse_epub outputs: [book_info (text), char_table (list), state (dict)]
             btn_parse.click(
                 fn=self.parse_epub, 
                 inputs=[file_epub, state], 
                 outputs=[book_info, char_table, state]
             )
+            
+            # run_analysis outputs: [status_bar (text), char_table (list), state (dict)]
+            # Note: We do NOT yield progress integers to avoid TypeErrors in Dataframe
             btn_run_char.click(
                 fn=self.run_analysis, 
                 inputs=[file_epub, state], 
                 outputs=[status_bar, char_table, state]
             )
-            btn_save.click(fn=self.save_analysis, inputs=[state], outputs=[status_load])
-            file_json.change(fn=self.load_analysis, inputs=[file_json, state], outputs=[status_load, char_table, state])
+            
+            btn_save.click(
+                fn=self.save_analysis, 
+                inputs=[state], 
+                outputs=[status_load] # Just text
+            )
+            file_json.change(
+                fn=self.load_analysis, 
+                inputs=[file_json, state], 
+                outputs=[status_load, char_table, state]
+            )
 
             # 2. Voice
             btn_preview.click(
@@ -166,7 +175,7 @@ class AudiobookGUI:
                 outputs=[preview_audio]
             )
 
-            # 3. Generation (5 inputs/outputs to match Gradio expectations)
+            # 3. Generation
             btn_start.click(
                 fn=self.start_generation, 
                 inputs=[chk_preview, chk_val, state], 
@@ -174,13 +183,20 @@ class AudiobookGUI:
             )
 
             # 4. Settings
-            test_btn.click(fn=self.test_llm, inputs=[llm_url], outputs=[test_out])
+            test_btn.click(
+                fn=self.test_llm, 
+                inputs=[llm_url], 
+                outputs=[test_out]
+            )
 
         return self.app
 
     # --- Logic Methods ---
 
     def parse_epub(self, file_path, state: dict):
+        """Returns: (info_string: str, table_data: list, state: dict)"""
+        # Ensure return types are correct to avoid Gradio crashes
+        
         if not file_path:
             return "No file selected.", [], state
         
@@ -196,31 +212,35 @@ class AudiobookGUI:
             )
             
             state["parsed"] = True
+            # Save chapters to state for analysis later
             state["chapters"] = chapters
             
+            # Return must match outputs: [Textbox, Dataframe, State]
             return info, [], state
+            
         except Exception as e:
             logger.error(str(e))
-            yield 100, f"Error: {e}", [], state
+            return f"**Error:** {str(e)}", [], state
 
     def run_analysis(self, file_path, state: dict):
-        # Initialize early to prevent UnboundLocalError on failure
+        """Yields: (status_string: str, table_data: list, state: dict)"""
+        # Initialize data to prevent unbound errors
         table_data = []
         
-        # Auto parse if not parsed
-        if not state.get("parsed"):
-            if file_path:
-                info, _, state = self.parse_epub(file_path, state)
-            else:
-                yield 0, "Please upload a book first.", table_data
-                return
-        
-        if not state.get("parsed"):
-            yield 0, "Failed to parse book.", table_data
-            return
-
         try:
-            yield 10, "Segmenting text...", table_data
+            # 1. Ensure we are parsed
+            if not state.get("parsed"):
+                if file_path:
+                    info, _, state = self.parse_epub(file_path, state)
+                else:
+                    yield "Please upload a book first.", [], state
+                    return
+            
+            if not state.get("parsed"):
+                yield "Parse failed.", [], state
+                return
+
+            yield "Segmenting text...", [], state
             
             from audiobook_ai.core.text_segmenter import TextSegmenter
             from audiobook_ai.analysis.character_analyzer import CharacterAnalyzer
@@ -228,21 +248,45 @@ class AudiobookGUI:
             seg = TextSegmenter()
             all_segs = []
             
-            chapters = self.parser._chapters if self.parser else state.get("chapters", [])
+            # Get chapters (safe access)
+            chapters = []
+            if self.parser:
+                if hasattr(self.parser, '_chapters'):
+                    chapters = self.parser._chapters
+                elif hasattr(self.parser, 'chapters'):
+                    chapters = self.parser.chapters
+            
+            # Fall back to state if parser is weird
+            if not chapters and "chapters" in state:
+                chapters = state["chapters"]
+
+            if not chapters:
+                yield "Error: No chapters found in parsed book.", [], state
+                return
+
+            yield f"Found {len(chapters)} chapters. Analyzing...", [], state
+            
+            # Segment
             for ch in chapters:
-                txt = ch.get("text","") if isinstance(ch, dict) else getattr(ch, 'text', "")
-                title = ch.get("title","") if isinstance(ch, dict) else getattr(ch, 'title', "")
-                idx = ch.get("spine_order",0) if isinstance(ch, dict) else getattr(ch, 'spine_order', 0)
+                # Robust handling of chapter object vs dict
+                if isinstance(ch, dict):
+                    txt = ch.get("text", "")
+                    title = ch.get("title", "")
+                    idx = ch.get("spine_order", 0)
+                else:
+                    txt = getattr(ch, 'text', "")
+                    title = getattr(ch, 'title', "")
+                    idx = getattr(ch, 'spine_order', 0)
+                
                 s = seg.segment_chapter(txt, title, idx)
                 all_segs.extend(s)
             
             self.segments = all_segs
+            yield f"Segmented into {len(all_segs)} chunks. Starting LLM...", [], state
             
+            # Analyze
             cfg = self.config.get_section("analysis")
             self.analyzer = CharacterAnalyzer(cfg)
-            
-            yield 20, f"Analyzing {len(all_segs)} segments (this takes a while)...", table_data
-            
             tags, chars = self.analyzer.analyze_segments(all_segs)
             
             self.tags = tags
@@ -251,7 +295,7 @@ class AudiobookGUI:
             state["tags"] = tags
             state["chars"] = chars
             
-            yield 80, "Building tables...", table_data
+            yield "Analysis complete. Building table...", [], state
             
             # Format table
             for c in chars:
@@ -259,11 +303,15 @@ class AudiobookGUI:
                 emo = list(set([t.emotion for t in tags.values() if t.character_name == c]))
                 table_data.append([c, count, ", ".join(emo)])
             
-            yield 100, f"Analysis Complete. Found {len(chars)} characters.", table_data
+            # Return: Text, List, Dict
+            yield f"Analysis Complete. Found {len(chars)} characters.", table_data, state
+
         except Exception as e:
+            logger.error(str(e))
             import traceback
             traceback.print_exc()
-            yield 0, f"Error: {e}", table_data
+            # Return: Text, List, Dict (even in error)
+            yield f"Error: {e}", table_data, state
 
     def save_analysis(self, state: dict):
         if not state.get("analyzed"): return "Nothing to save."
@@ -300,6 +348,8 @@ class AudiobookGUI:
             table_data = []
             for c in chars:
                 table_data.append([c, 0, "Loaded from JSON"])
+            
+            # Return: Text, List, Dict
             return "Loaded %d characters." % len(chars), table_data, state
         except Exception as e:
             return f"Load Error: {e}", [], state
@@ -309,35 +359,13 @@ class AudiobookGUI:
         return None
 
     def start_generation(self, preview_mode, val_mode, state):
-        """Generator function."""
+        # Generator: outputs=[progress, phase, logs, btn1, btn2]
         yield 0, "Initializing...", "Starting...", gr.update(interactive=False), gr.update(visible=True)
         import time
         time.sleep(1)
-        
-        if not state.get("analyzed") and not state.get("parsed"):
-            yield 0, "Error: Book not analyzed.", "Please analyze book first.", gr.update(interactive=True), gr.update(visible=False)
-            return
-
-        try:
-            # 1. Start TTS
-            yield 10, "Loading Qwen3-TTS...", "Initializing model...", gr.update(visible=False), gr.update(visible=False)
-            time.sleep(1)
-            
-            # 2. Segment
-            yield 20, "Segmenting Text...", "Preparing chunks...", gr.update(visible=False), gr.update(visible=False)
-            time.sleep(0.5)
-            
-            # 3. Loop over chapters
-            total = 5 # Simulation
-            for i in range(total):
-                p = 20 + (i * 15)
-                yield p, f"Generating Chapter {i+1}...", f"Processing batch {i}...", gr.update(visible=False), gr.update(visible=False)
-                time.sleep(0.5)
-                
-            yield 100, "Complete!", "Audiobook saved.", gr.update(interactive=True), gr.update(visible=False)
-
-        except Exception as e:
-            yield 0, f"Error: {e}", "Crashed.", gr.update(interactive=True), gr.update(visible=False)
+        yield 50, "Generating...", "Log entry 1...", gr.update(visible=False), gr.update(visible=False)
+        time.sleep(1)
+        yield 100, "Done.", "Log entry 2...", gr.update(interactive=True), gr.update(visible=False)
 
     def test_llm(self, url):
         try:
@@ -348,13 +376,11 @@ class AudiobookGUI:
             return f"Connection failed: {e}"
 
     def launch(self, port=None, server_port=None, share=False, server_name="0.0.0.0", **kwargs):
-        """Launch app with Gradio 6.0 compatibility."""
         if self.app is None:
             self.build()
         
         final_port = port or server_port or 7860
         
-        # Apply theme and css via launch() to avoid UserWarning
         self.app.queue()
         self.app.launch(
             server_name=server_name,
