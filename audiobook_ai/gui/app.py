@@ -672,7 +672,7 @@ class AudiobookGUI:
                 {"loaded": False, "parsed": False, "analyzed": False, "voices_assigned": False},
             )
 
-    def _on_run_analysis(self, state, analysis_status_box, char_list_box):
+    def _on_run_analysis(self, state):
         """Generator-based analysis to provide live progress updates."""
         self._ensure_voices_initialized()
         if not self._epub_parser or not getattr(self._epub_parser, '_chapters', None):
@@ -715,8 +715,8 @@ class AudiobookGUI:
                 status = item.get("status", "")
                 msg = item.get("msg", "")
 
-                if status in ("init", "analyzing", "progress", "batch_start", "batch_done"):
-                    # Live progress update - show in status box
+                if status in ("init", "progress"):
+                    # Update the status box with live progress
                     yield msg, [], state
                 elif status == "finished":
                     self._segment_tags, self._discovered_chars = item["result"]
@@ -746,6 +746,10 @@ class AudiobookGUI:
             import traceback
             self._log(f"Analysis error: {e}\n{traceback.format_exc()}")
             yield f"Error: {e}", [], state
+
+    def _on_setup_default_voices(self):
+        """Create default voice profiles."""
+        try:
             from audiobook_ai.tts.voice_manager import VoiceManager
             voices_dir = os.path.join(
                 self._project.project_dir if self._project else tempfile.gettempdir(),
@@ -755,7 +759,7 @@ class AudiobookGUI:
 
             self._voice_manager = VoiceManager(voices_dir)
             created = self._voice_manager.create_default_voices()
-            
+
             voices_info = self._voice_manager.list_voices()
             status = f"Created {len(created)} default voices:\n" + "\n".join(
                 f"  - {name}" for name in sorted(voices_info.keys())
