@@ -222,7 +222,7 @@ class AudiobookGUI:
             seg = TextSegmenter()
             all_segs = []
             
-            chapters = self.parser.chapters if self.parser else state.get("chapters", [])
+            chapters = self.parser._chapters if self.parser else state.get("chapters", [])
             for ch in chapters:
                 txt = ch.get("text","") if isinstance(ch, dict) else getattr(ch, 'text', "")
                 title = ch.get("title","") if isinstance(ch, dict) else getattr(ch, 'title', "")
