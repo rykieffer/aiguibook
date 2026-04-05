@@ -1130,6 +1130,10 @@ class AudiobookGUI:
         except Exception as e:
             return f"Error generating descriptions: {e}"
 
+    def _on_narrator_voice_change(self, narrator_voice):
+        """Show/hide custom narrator ref input based on selection."""
+        return gr.update(visible=(narrator_voice == "custom"))
+
     def _on_generate_edge_tts_sample(self, voice_dropdown, sample_text, language):
         """Generate a voice sample using Edge TTS (free, no API key needed)."""
         import asyncio
