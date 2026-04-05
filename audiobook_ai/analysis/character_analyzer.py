@@ -263,7 +263,7 @@ class CharacterAnalyzer:
             backend=backend, base_url=base_url, api_key=api_key,
         )
 
-    def _deduplicate_characters(self, char_list: List[str]) -> Dict[str, str]:
+    def deduplicate_characters(self, char_list: List[str]) -> Dict[str, str]:
         """Ask LLM to merge character name variants.
 
         Sends the character list to the LLM and asks which names refer to the
@@ -509,7 +509,7 @@ class CharacterAnalyzer:
 
         # Deduplicate character name variants - merge similar names
         # Uses a simple heuristic: if one name is a substring of another, merge them
-        deduped = self.deduplicate_characters(unique_chars)
+        deduped = self._deduplicate_characters(unique_chars)
         unique_merged = list(deduped.keys())
         print(f"\n[DEDUP] Merged {len(unique_chars)} characters -> {len(unique_merged)} unique characters:")
         for canonical, variants in deduped.items():
