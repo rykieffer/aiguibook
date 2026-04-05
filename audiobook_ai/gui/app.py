@@ -719,27 +719,52 @@ class AudiobookGUI:
                     # Update the status box with live progress
                     yield msg, [], state
                 elif status == "finished":
-                    self._segment_tags, self._discovered_chars = item["result"]
+                    result = item["result"]
+                    self._segment_tags = result[0]
+                    self._discovered_chars = result[1]
+                    self._dedup_map = result[2] if len(result) > 2 else {}
                     state["analyzed"] = True
 
                     # Build character suggestions
                     chars = []
                     tags = list(self._segment_tags.values())
-                    for cn in self._discovered_chars:
+                    for cn in sorted(self._discovered_chars):
                         emotion_list = list(set(
-                            t.emotion for t in tags if t.character_name == cn
+                            t.emotion for t in tags
+                            if t.character_name is not None and
+                               self._dedup_map.get(t.character_name, t.character_name) == cn
                         ))
+                        seg_count = sum(
+                            1 for t in tags
+                            if t.character_name is not None and
+                               self._dedup_map.get(t.character_name, t.character_name) == cn
+                        )
                         chars.append({
                             "character": cn,
                             "suggested_voice": "narrator_male",
-                            "segments": len(self._analyzer.get_character_segments(cn)),
+                            "segments": seg_count,
                             "emotions": emotion_list,
                         })
 
+                    # Auto-save analysis to project dir
+                    if self._project:
+                        analysis_path = os.path.join(
+                            self._project.project_dir, "character_analysis.json"
+                        )
+                        self._analyzer.save_analysis(
+                            analysis_path,
+                            self._segment_tags,
+                            self._discovered_chars,
+                            self._dedup_map,
+                        )
+
                     self._log(
-                        f"Analysis complete. Found {len(self._discovered_chars)} characters."
+                        f"Analysis complete. Found {len(chars)} unique characters."
                     )
-                    final_msg = f"Done! {len(self._discovered_chars)} characters, {total_segs} segments"
+                    final_msg = (
+                        f"Done! {len(chars)} unique characters, "
+                        f"{total_segs} segments. Saved to project dir."
+                    )
                     yield final_msg, chars, state
 
         except Exception as e:

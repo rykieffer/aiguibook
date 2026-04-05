@@ -263,17 +263,143 @@ class CharacterAnalyzer:
             backend=backend, base_url=base_url, api_key=api_key,
         )
 
+    def deduplicate_characters(self, char_list: List[str]) -> Dict[str, str]:
+        """Ask LLM to merge character name variants.
+
+        Sends the character list to the LLM and asks which names refer to the
+        same person. Returns a mapping of variant -> canonical name.
+
+        Example: {'Bobbie': 'Bobbie', 'Draper': 'Bobbie',
+                  'Roberta Draper': 'Bobbie'}
+
+        Args:
+            char_list: List of character names found during analysis
+
+        Returns:
+            Dict mapping each variant to its canonical name
+        """
+        if len(char_list) <= 1:
+            return {c: c for c in char_list}
+
+        names_str = "\n".join(f"- {c}" for c in char_list)
+        prompt = (
+            f"Here is a list of character names detected in a French translation "
+            f"of a book. Some names refer to the same character (nicknames, "
+            f"titles, full names, partial names, etc.).\n\n"
+            f"NAMES:\n{names_str}\n\n"
+            f"Group names that refer to the SAME character. Return ONLY a JSON "
+            f"object where keys are the original names and values are the chosen "
+            f"canonical name for that group.\n\n"
+            f"Example:\n"
+            f'{{"Bobbie":"Bobbie","Draper":"Bobbie","Roberta Draper":"Bobbie",'
+            f'"Chrisjen Avasarala":"Avasarala","Avasarala":"Avasarala"}}\n\n'
+            f"Return ONLY the JSON object. No explanation."
+        )
+
+        for attempt in range(3):
+            try:
+                response = self._session.chat.completions.create(
+                    model=self._model,
+                    messages=[{"role": "user", "content": prompt}],
+                    temperature=0.0,
+                    max_tokens=1000,
+                    timeout=60.0,
+                )
+                raw = response.choices[0].message.content or ""
+                content = raw.strip()
+
+                if not content:
+                    if attempt < 2:
+                        time.sleep(1)
+                        continue
+                    break
+
+                parsed = self._extract_json(content)
+                if isinstance(parsed, dict):
+                    # Validate: all char_list names should be keys
+                    result = {}
+                    for c in char_list:
+                        result[c] = parsed.get(c, c)  # default to self
+                    print(f"\n[DEDUP] Merged {len(char_list)} names -> "
+                          f"{len(set(result.values()))} unique characters")
+                    for canonical in sorted(set(result.values())):
+                        variants = [k for k, v in result.items() if v == canonical]
+                        if len(variants) > 1:
+                            print(f"  {canonical} <- {', '.join(variants)}")
+                    return result
+                else:
+                    print(f"[DEDUP] Unexpected response type: {type(parsed).__name__}")
+                    if attempt < 2:
+                        continue
+                    break
+
+            except Exception as e:
+                print(f"[DEDUP] Error (attempt {attempt+1}): {e}")
+                if attempt < 2:
+                    time.sleep(1)
+
+        print("[DEDUP] Deduplication failed, using names as-is")
+        return {c: c for c in char_list}
+
+    def save_analysis(self, filepath: str,
+                      segment_tags: Dict[str, SpeechTag],
+                      char_list: List[str],
+                      dedup_map: Optional[Dict[str, str]] = None):
+        """Save character analysis to a JSON file for reuse."""
+        data = {
+            "segment_tags": {sid: tag.to_dict() for sid, tag in segment_tags.items()},
+            "characters": char_list,
+            "dedup_map": dedup_map or {},
+        }
+        with open(filepath, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2, ensure_ascii=False)
+        print(f"Saved analysis to {filepath}")
+        logger.info(f"Saved analysis to {filepath}")
+
+    @staticmethod
+    def load_analysis(filepath: str):
+        """Load character analysis from a JSON file.
+
+        Returns:
+            (segment_tags_dict, char_list, dedup_map)
+            segment_tags_dict: {segment_id: SpeechTag}
+        """
+        with open(filepath, "r", encoding="utf-8") as f:
+            data = json.load(f)
+
+        segment_tags = {}
+        for sid, d in data.get("segment_tags", {}).items():
+            segment_tags[sid] = SpeechTag(
+                segment_id=d.get("segment_id", sid),
+                speaker_type=d.get("speaker_type", "narrator"),
+                character_name=d.get("character_name"),
+                emotion=d.get("emotion", "neutral"),
+                voice_id=d.get("voice_id", "narrator_male"),
+                emotion_instruction=d.get("emotion_instruction", ""),
+                character_description=d.get("character_description", ""),
+                suggested_voice_id=d.get("suggested_voice_id", "narrator_male"),
+            )
+
+        char_list = data.get("characters", [])
+        dedup_map = data.get("dedup_map", {})
+
+        print(f"Loaded analysis: {len(segment_tags)} segments, "
+              f"{len(char_list)} characters from {filepath}")
+        logger.info(f"Loaded analysis: {len(segment_tags)} segments, "
+                     f"{len(char_list)} characters from {filepath}")
+        return segment_tags, char_list, dedup_map
+
     def analyze_segments(
         self,
         segments_list: list,
         language: str = "french",
-    ) -> Tuple[Dict[str, SpeechTag], List[str]]:
-        """Analyze all segments, returning (tags_dict, character_list)."""
+    ) -> Tuple[Dict[str, SpeechTag], List[str], Dict[str, str]]:
+        """Analyze all segments, returning (tags_dict, character_list, dedup_map)."""
         result = None
         for item in self.analyze_segments_iter(segments_list, language):
             if item.get("status") == "finished":
                 result = item["result"]
-        return result or ({}, [])
+        return result or ({}, [], {})
 
     def analyze_segments_iter(
         self,
@@ -349,12 +475,17 @@ class CharacterAnalyzer:
         print(f"\nAnalysis complete! {len(all_chars)} characters in {total_time:.0f}s")
         for cn in unique_chars:
             print(f"  - {cn}: {len(self._characters[cn])} segments")
-        
+
+        # Deduplicate character names (single LLM call, ~30s)
+        print("\n[Deduplication] Merging character name variants...")
+        dedup_map = self.deduplicate_characters(unique_chars)
+        unique_merged = sorted(set(dedup_map.values()))
+        print(f"[Deduplication] {len(unique_chars)} -> {len(unique_merged)} unique characters\n")
         logger.info(
             f"Analysis complete: {len(all_tags)} segments, "
-            f"{len(unique_chars)} characters in {total_time:.0f}s"
+            f"{len(unique_merged)} unique characters in {total_time:.0f}s"
         )
-        yield {"status": "finished", "msg": "Analysis complete!", "result": (all_tags, unique_chars)}
+        yield {"status": "finished", "msg": "Analysis complete!", "result": (all_tags, unique_merged, dedup_map)}
 
     # Dialogue marker characters (French + English quotes, dashes, etc.)
     _DIALOGUE_MARKERS = {"\"", "\u201c", "\u201d", "\u00ab", "\u00bb", "\u2014", "\u2013", "\u002d"}
