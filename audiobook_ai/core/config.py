@@ -200,7 +200,7 @@ class AudiobookConfig:
             )
 
         # Crossfade must be non-negative
-        crossfade = self.config.get("output", "crossfade_duration", 0.5)
+        crossfade = self.get("output", "crossfade_duration", 0.5)
         if crossfade < 0:
             warnings.append("crossfade_duration must be non-negative")
 
