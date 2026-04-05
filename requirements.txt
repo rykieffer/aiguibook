@@ -1,51 +1,11 @@
-# AIGUIBook - AI Audiobook Generator Dependencies
-# ===============================================
-
-# Core TTS (Qwen3-TTS for final audiobook generation)
 qwen-tts>=0.1.0
 torch>=2.5.1
 torchaudio>=2.5.1
-
-# Preview Voice (Faster, lighter than Bark)
-edge-tts
-pydub
-
-# Speech recognition (validation)
 faster-whisper>=1.0.0
-
-# Transformers / model loading
-transformers>=4.45.0
-accelerate
-
-# LLM API
 openai>=1.0.0
-
-# Configuration
 pyyaml>=6.0
-
-# GUI
 gradio>=5.0.0
-
-# EPUB parsing
 ebooklib>=0.18
 lxml
-
-# Data models
 pydantic>=2.0
-
-# Validation
-jiwer>=3.0
-
-# Audio processing
-ffmpeg-python
-
-# General
-numpy
-soundfile>=0.12.0
-
-# CLI
-rich
-click
-
-# String comparison
-Levenshtein
+edge-tts
