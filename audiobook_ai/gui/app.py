@@ -204,20 +204,26 @@ class AudiobookGUI:
             yield 100, f"Error: {e}", [], state
 
     def run_analysis(self, file_path, state: dict):
+        # Initialize early to prevent UnboundLocalError on failure
+        table_data = []
+        
+        # Auto parse if not parsed
         if not state.get("parsed"):
             if file_path:
-                _, _, state = self.parse_epub(file_path, state)
+                info, _, state = self.parse_epub(file_path, state)
             else:
-                return "Please parse a book first.", [], state
-
+                yield 0, "Please upload a book first.", table_data
+                return
+        
         if not state.get("parsed"):
-            return "Parse failed.", [], state
+            yield 0, "Failed to parse book.", table_data
+            return
 
         try:
+            yield 10, "Segmenting text...", table_data
+            
             from audiobook_ai.core.text_segmenter import TextSegmenter
             from audiobook_ai.analysis.character_analyzer import CharacterAnalyzer
-            
-            logger.info("Starting Character Analysis...")
             
             seg = TextSegmenter()
             all_segs = []
@@ -234,14 +240,10 @@ class AudiobookGUI:
             
             cfg = self.config.get_section("analysis")
             self.analyzer = CharacterAnalyzer(cfg)
-            logger.info("About to start LLM analysis on %d segments..." % len(all_segs))
-            yield 10, "Starting LLM Analysis (this takes a few minutes)...", table_data
             
-            # Run Analysis
+            yield 20, f"Analyzing {len(all_segs)} segments (this takes a while)...", table_data
+            
             tags, chars = self.analyzer.analyze_segments(all_segs)
-            
-            # Analysis done
-            yield 90, "Processing Results...", table_data
             
             self.tags = tags
             self.characters = chars
@@ -249,18 +251,19 @@ class AudiobookGUI:
             state["tags"] = tags
             state["chars"] = chars
             
-            table_data = []
+            yield 80, "Building tables...", table_data
+            
+            # Format table
             for c in chars:
                 count = sum(1 for t in tags.values() if t.character_name == c)
                 emo = list(set([t.emotion for t in tags.values() if t.character_name == c]))
                 table_data.append([c, count, ", ".join(emo)])
             
-            yield 100, "Analysis Complete! Found %d characters." % len(chars), table_data, state
+            yield 100, f"Analysis Complete. Found {len(chars)} characters.", table_data
         except Exception as e:
-            logger.error(str(e))
             import traceback
             traceback.print_exc()
-            yield 100, f"Error: {e}", [], state
+            yield 0, f"Error: {e}", table_data
 
     def save_analysis(self, state: dict):
         if not state.get("analyzed"): return "Nothing to save."
