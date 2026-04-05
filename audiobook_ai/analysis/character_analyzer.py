@@ -263,7 +263,7 @@ class CharacterAnalyzer:
             backend=backend, base_url=base_url, api_key=api_key,
         )
 
-    def deduplicate_characters(self, char_list: List[str]) -> Dict[str, str]:
+    def _deduplicate_characters(self, char_list: List[str]) -> Dict[str, str]:
         """Ask LLM to merge character name variants.
 
         Sends the character list to the LLM and asks which names refer to the
@@ -340,6 +340,37 @@ class CharacterAnalyzer:
 
         print("[DEDUP] Deduplication failed, using names as-is")
         return {c: c for c in char_list}
+
+    def build_voice_descriptions(self) -> Dict[str, dict]:
+        """Generate ElevenLabs-style voice descriptions for each character.
+        
+        Returns dict mapping character name to voice description info."""
+        descriptions = {}
+        for char_name, segments in self._characters.items():
+            char_lower = char_name.lower()
+            # Gender inference
+            is_female = any(w in char_lower for w in ["madame", "mademoiselle", "mme", "elle", "miss", "lady", "woman", "femme", "mei", "elise", "naomi", "giora", "tannen", "demanda"])
+            gender_desc = "female" if is_female else "male"
+            
+            # Voice prompt generation
+            is_military = any(w in char_lower for w in ["sergent", "capitaine", "draper", "bobbie", "roberta"])
+            is_political = any(w in char_lower for w in ["avasarala", "chrisjen", "errin", "genera", "walter"])
+            
+            if is_military:
+                voice_prompt = f"A {gender_desc} military voice, French accent. Firm, disciplined, authoritative tone."
+            elif is_political:
+                voice_prompt = f"A sophisticated {gender_desc} political voice, French accent. Measured and diplomatic."
+            else:
+                voice_prompt = f"A natural {gender_desc} voice, French accent. Clear and expressive audiobook voice."
+            
+            descriptions[char_name] = {
+                "elevenlabs_prompt": voice_prompt,
+                "french_description": voice_prompt,
+                "voice_type": "custom",
+                "segment_count": len(segments)
+            }
+        return descriptions
+
 
     def save_analysis(self, filepath: str,
                       segment_tags: Dict[str, SpeechTag],

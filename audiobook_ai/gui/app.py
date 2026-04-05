@@ -133,6 +133,49 @@ class AudiobookGUI:
                         interactive=False,
                     )
 
+                    with gr.Group():
+                        gr.Markdown("### ElevenLabs Voice Descriptions")
+                        generate_voice_desc_btn = gr.Button(
+                            "Generate Voice Descriptions for ElevenLabs / Générer Descriptions Voix",
+                            variant="primary",
+                        )
+                        voice_descriptions_box = gr.Textbox(
+                            label="Voice Descriptions (copy to ElevenLabs)",
+                            interactive=True,
+                            lines=15,
+                            max_lines=50,
+                        )
+                        copy_voice_desc_btn = gr.Button(
+                            "Copy to Clipboard / Copier dans Presse-papiers",
+                            variant="secondary",
+                        )
+                        copy_status = gr.Textbox(
+                            label="Copy Status",
+                            interactive=False,
+                        )
+
+                    with gr.Group():
+                        gr.Markdown("### ElevenLabs Voice Descriptions / Descriptions Voix ElevenLabs")
+                        show_voice_desc_btn = gr.Button(
+                            "Generate ElevenLabs Descriptions / Générer Descriptions",
+                            variant="primary",
+                        )
+                        voice_descriptions_box = gr.Textbox(
+                            label="ElevenLabs Prompts (Copy these into ElevenLabs Voice Design)",
+                            interactive=False,
+                            lines=15,
+                            max_lines=50,
+                        )
+                        copy_voice_desc_btn = gr.Button(
+                            "Copy to Clipboard / Copier",
+                            variant="secondary",
+                        )
+                        copy_status = gr.Textbox(
+                            label="Copy Status",
+                            value="Click to generate and copy descriptions.",
+                            interactive=False,
+                        )
+
                     parse_btn = gr.Button(
                         "Parse EPUB / Analyser EPUB",
                         variant="primary",
@@ -212,6 +255,19 @@ class AudiobookGUI:
                         inputs=[analysis_file_input],
                         outputs=[analysis_load_status, character_list, app_state],
                     )
+
+                    show_voice_desc_btn.click(
+                        fn=self._on_show_voice_descriptions,
+                        inputs=[],
+                        outputs=[voice_descriptions_box],
+                    )
+
+                    copy_voice_desc_btn.click(
+                        fn=self._on_copy_voice_descriptions,
+                        inputs=[],
+                        outputs=[copy_status],
+                    )
+
                     setup_default_voices_btn.click(
                         fn=self._on_setup_default_voices,
                         inputs=[],
@@ -888,6 +944,39 @@ class AudiobookGUI:
             self._log(f"Analysis error: {e}\n{traceback.format_exc()}")
             yield f"Error: {e}", [], state
 
+    def _on_show_voice_descriptions(self):
+        """Generate and return ElevenLabs descriptions for discovered characters."""
+        if not self._analyzer or not self._discovered_chars:
+            return "No analysis data available. Run character analysis first."
+        
+        try:
+            desc = self._analyzer.build_voice_descriptions()
+            output = "=== ElevenLabs Voice Descriptions ===\n\n"
+            for char, info in desc.items():
+                output += f"Character: {char}\n"
+                output += f"ElevenLabs Prompt: {info['elevenlabs_prompt']}\n"
+                output += f"Segments: {info['segment_count']}\n"
+                output += "\n---\n\n"
+            return output
+        except Exception as e:
+            return f"Error generating descriptions: {e}"
+    
+    def _on_copy_voice_descriptions(self):
+        """Copy ElevenLabs descriptions to a file (clipboard may not work on server)."""
+        try:
+            desc = self._analyzer.build_voice_descriptions()
+            filepath = os.path.join(tempfile.gettempdir(), "elevenlabs_voice_prompts.txt")
+            text_content = ""
+            for char, info in desc.items():
+                text_content += f"Character: {char}\nPrompt: {info['elevenlabs_prompt']}\n\n"
+            
+            with open(filepath, 'w', encoding='utf-8') as f:
+                f.write(text_content)
+            
+            return f"Voice descriptions saved to {filepath}\n\nYou can open this file, copy the prompts, and paste them into ElevenLabs Voice Design."
+        except Exception as e:
+            return f"Error saving descriptions: {e}"
+
     def _on_load_analysis(self, analysis_file_path):
         """Load a previously saved character analysis from a JSON file."""
         if not analysis_file_path:
@@ -1021,9 +1110,25 @@ class AudiobookGUI:
             pass
         return None
 
-    def _on_narrator_voice_change(self, narrator_voice):
-        """Show/hide custom narrator ref input based on selection."""
-        return gr.update(visible=(narrator_voice == "custom"))
+    def _on_generate_voice_descriptions(self):
+        """Generate and return text with ElevenLabs voice descriptions for each character."""
+        if not self._analyzer or not self._discovered_chars:
+            return "No character data available. Run analysis first."
+        
+        try:
+            descriptions = self._analyzer.build_voice_descriptions()
+            output = "=== ElevenLabs Voice Descriptions ===\n\n"
+            output += "Copy any description into ElevenLabs Voice Generation tool.\n\n"
+            
+            for char, info in descriptions.items():
+                output += f"Character: {info['name']}"
+                if info.get('emotion_summary'):
+                    output += f" (Emotions: {info['emotion_summary']})"
+                output += f" - {info['voice_desc']}\n"
+            
+            return output
+        except Exception as e:
+            return f"Error generating descriptions: {e}"
 
     def _on_generate_edge_tts_sample(self, voice_dropdown, sample_text, language):
         """Generate a voice sample using Edge TTS (free, no API key needed)."""
