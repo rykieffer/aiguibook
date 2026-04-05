@@ -46,46 +46,29 @@ EMOTION_INSTRUCTIONS_EN = {
 }
 
 ANALYSIS_PROMPT_TEMPLATE = """You are an expert literary analyst for audiobook production.
-Your task is to analyze text segments from a book and return structured JSON with:
-1. Who is speaking (narrator vs character dialogue)
-2. Which character is speaking (if dialogue)
-3. The emotion/tone of the speech
-4. A brief character description
-5. An appropriate voice profile ID suggestion
 
-You are analyzing French/English bilingual text.
+Analyze each text segment and identify:
+1. Is it "narrator" or "dialogue" (speaker_type)
+2. Who is speaking - character_name (or null if narrator)
+3. emotion: exactly one of: calm, excited, angry, sad, whisper, tense, urgent, amused, contemptuous, surprised, neutral
+4. emotion_instruction: a short French phrase telling the TTS how to speak
 
-Available Voice Profiles:
-- narrator_male: Deep warm male, mature, authoritative
-- narrator_female: Soft warm female, clear and elegant
-- young_male: Young energetic male, bright
-- young_female: Young cheerful female, animated
-- elder_male: Older deep male, grave and wise
-- elder_female: Older compassionate female, gentle
-- robotic: Mechanical synthetic voice for sci-fi
-- custom: Placeholder for custom user voices
-
-SEGMENTS TO ANALYZE:
+SEGMENTS:
 {segments_json}
 
 LANGUAGE: {language}
 
-RULES:
-- speaker_type: "narrator" or "dialogue"
-- character_name: The actual character name (proper noun), or null for narrator
-- emotion: One of: calm, excited, angry, sad, whisper, tense, urgent, amused, contemptuous, surprised, neutral
-- character_description: 2-5 words describing the speaker (e.g. "Young energetic male")
-- suggested_voice_id: Best match from the Available Voice Profiles list
-- voice_id: Same as suggested_voice_id
-- emotion_instruction: French instruction for TTS (e.g. "Parlez avec un ton calme et pose")
+Voice profiles you can suggest: narrator_male, narrator_female, young_male, young_female, elder_male, elder_female, robotic, custom.
+- For narrator segments use narrator_male
+- For dialogue, suggest the best matching voice profile
+- voice_id should match suggested_voice_id
 
-RESPOND WITH JSON ARRAY ONLY. No markdown, no explanation, no text before or after the JSON.
-The response MUST be a valid JSON array starting with [ and ending with ].
-
-Example response format:
+RESPOND WITH JSON ONLY. The first character of your response must be [ and the last must be ].
+Do NOT include any text, explanation, or markdown before or after the JSON.
+Use this exact JSON structure for each segment:
 [
-  {{"segment_id": "seg_001", "speaker_type": "narrator", "character_name": null, "emotion": "calm", "character_description": "Narrator voice", "suggested_voice_id": "narrator_male", "voice_id": "narrator_male", "emotion_instruction": "Parlez avec un ton calme et pose"}},
-  {{"segment_id": "seg_002", "speaker_type": "dialogue", "character_name": "Marcus", "emotion": "angry", "character_description": "Young angry male", "suggested_voice_id": "young_male", "voice_id": "young_male", "emotion_instruction": "Parlez avec colere et tension"}}
+  {{"segment_id": "...", "speaker_type": "narrator", "character_name": null, "emotion": "calm", "suggested_voice_id": "narrator_male", "voice_id": "narrator_male", "emotion_instruction": "Parlez avec un ton calme et pose", "character_description": "Narrateur"}},
+  {{"segment_id": "...", "speaker_type": "dialogue", "character_name": "Jean", "emotion": "angry", "suggested_voice_id": "young_male", "voice_id": "young_male", "emotion_instruction": "Parlez avec colere et tension", "character_description": "Young male"}}
 ]
 """
 
@@ -120,30 +103,26 @@ def get_llm_models_from_backend(
     backend: str,
     base_url: Optional[str] = None,
     api_key: Optional[str] = None,
-    timeout: float = 10.0,
+    timeout: float = 5.0,
 ) -> Tuple[bool, List[str], str]:
     """Auto-detect available models from an LLM backend.
 
     Args:
         backend: One of "lmstudio", "ollama", "openrouter"
-        base_url: Base URL for local backends (LM Studio, Ollama)
+        base_url: Base URL for local backends
         api_key: API key for remote backends
         timeout: Request timeout in seconds
 
     Returns:
         Tuple of (success, model_list, error_message)
     """
-    try:
-        import urllib.request
-        import urllib.error
-    except ImportError:
-        return False, [], "urllib not available"
+    import urllib.request
+    import urllib.error
 
     if backend == "lmstudio":
         url = (base_url or "http://localhost:1234/v1") + "/models"
         try:
             req = urllib.request.Request(url)
-            req.add_header("Content-Type", "application/json")
             with urllib.request.urlopen(req, timeout=timeout) as resp:
                 data = json.loads(resp.read().decode())
             model_ids = [m.get("id", "") for m in data.get("data", []) if m.get("id")]
@@ -161,7 +140,6 @@ def get_llm_models_from_backend(
             with urllib.request.urlopen(req, timeout=timeout) as resp:
                 data = json.loads(resp.read().decode())
             model_ids = [m.get("name", "") for m in data.get("models", []) if m.get("name")]
-            # Ollama models aren't OpenAI API models by default, but we can still list them
             if model_ids:
                 return True, model_ids, ""
             return False, [], "No models returned"
@@ -198,18 +176,7 @@ def test_llm_connection(
     api_key: Optional[str] = None,
     timeout: float = 30.0,
 ) -> Tuple[bool, str]:
-    """Test if an LLM backend is reachable and can process a simple request.
-
-    Args:
-        backend: One of "lmstudio", "ollama", "openrouter"
-        base_url: Base URL for local backends
-        model: Model ID to test with
-        api_key: API key for remote backends
-        timeout: Request timeout in seconds
-
-    Returns:
-        Tuple of (success, message)
-    """
+    """Test if an LLM backend is reachable and can process a simple request."""
     try:
         from openai import OpenAI
     except ImportError:
@@ -243,18 +210,9 @@ def test_llm_connection(
 
 
 class CharacterAnalyzer:
-    """Analyzes text segments to detect characters, emotions, and suggest voices.
-
-    Supports LM Studio, OpenRouter API, and Ollama backends.
-    Auto-detects the model from LM Studio/Ollama when configured.
-    """
+    """Analyzes text segments to detect characters, emotions, and suggest voices."""
 
     def __init__(self, config: dict, session=None):
-        """
-        Args:
-            config: Configuration dict for the analysis section
-            session: Optional pre-created OpenAI client
-        """
         self.config = config
         self._backend = config.get("llm_backend", "lmstudio")
         self._max_retries = config.get("max_retries", 3)
@@ -269,15 +227,7 @@ class CharacterAnalyzer:
             self._session, self._model = self._create_client()
 
     def _create_client(self) -> Tuple[Any, str]:
-        """Create an OpenAI-compatible client for the configured backend.
-
-        For LM Studio: auto-detect models if not set.
-        For Ollama: use configured model name.
-        For OpenRouter: use configured model name + API key.
-
-        Returns:
-            Tuple of (OpenAI client, model_name)
-        """
+        """Create an OpenAI-compatible client and determine model name."""
         try:
             from openai import OpenAI
         except ImportError:
@@ -285,34 +235,24 @@ class CharacterAnalyzer:
 
         if self._backend == "lmstudio":
             base_url = self.config.get("lmstudio_base_url", "http://localhost:1234/v1")
-            # Ensure base_url ends with /v1 for OpenAI compatibility
             if not base_url.rstrip("/").endswith("/v1"):
                 base_url = base_url.rstrip("/") + "/v1"
 
             model = self.config.get("lmstudio_model", "")
 
-            # Auto-detect model if not configured or empty
+            # Auto-detect model if not configured
             if not model:
                 logger.info("No LM Studio model configured, auto-detecting...")
-                ok, models, err = get_llm_models_from_backend(
-                    "lmstudio", base_url=base_url
-                )
+                ok, models, err = get_llm_models_from_backend("lmstudio", base_url=base_url)
                 if ok and models:
                     model = models[0]
                     logger.info(f"Auto-detected LM Studio model: {model}")
-                    # Save it back to config for next time
                     self.config["lmstudio_model"] = model
                 else:
-                    logger.warning(
-                        f"Could not auto-detect LM Studio models: {err}. "
-                        "Make sure LM Studio has a model loaded and is running."
+                    raise ValueError(
+                        f"No LM Studio model found. Load a model in LM Studio first. "
+                        f"Error: {err}"
                     )
-
-            if not model:
-                raise ValueError(
-                    "No LM Studio model found. Load a model in LM Studio first, "
-                    "or set lmstudio_model in config."
-                )
 
             client = OpenAI(base_url=base_url, api_key="unused")
             logger.info(f"CharacterAnalyzer -> LM Studio: {base_url} / {model}")
@@ -323,20 +263,14 @@ class CharacterAnalyzer:
             model = self.config.get("openrouter_model", "openai/gpt-4o-mini")
             if not api_key:
                 raise ValueError("OpenRouter API key not set.")
-            client = OpenAI(
-                base_url="https://openrouter.ai/api/v1",
-                api_key=api_key,
-            )
+            client = OpenAI(base_url="https://openrouter.ai/api/v1", api_key=api_key)
             logger.info(f"CharacterAnalyzer -> OpenRouter: {model}")
             return client, model
 
         elif self._backend == "ollama":
             base_url = self.config.get("ollama_base_url", "http://localhost:11434")
             model = self.config.get("ollama_model", "qwen3:32b")
-            client = OpenAI(
-                base_url=f"{base_url.rstrip('/')}/v1",
-                api_key="ollama",
-            )
+            client = OpenAI(base_url=f"{base_url.rstrip('/')}/v1", api_key="ollama")
             logger.info(f"CharacterAnalyzer -> Ollama: {model}")
             return client, model
 
@@ -349,14 +283,9 @@ class CharacterAnalyzer:
         base_url: Optional[str] = None,
         api_key: Optional[str] = None,
     ) -> Tuple[bool, List[str], str]:
-        """Static helper: discover available models from a backend.
-
-        Delegates to the module-level function.
-        """
+        """Static helper: discover available models from a backend."""
         return get_llm_models_from_backend(
-            backend=backend,
-            base_url=base_url,
-            api_key=api_key,
+            backend=backend, base_url=base_url, api_key=api_key,
         )
 
     def analyze_segments(
@@ -364,15 +293,7 @@ class CharacterAnalyzer:
         segments_list: list,
         language: str = "french",
     ) -> Tuple[Dict[str, SpeechTag], List[str]]:
-        """Blocking version: analyzes all segments and returns final result.
-
-        Args:
-            segments_list: List of TextSegment objects or dicts
-            language: Language of the text
-
-        Returns:
-            Tuple of ({segment_id: SpeechTag}, [character_names])
-        """
+        """Blocking version: analyzes all segments and returns final result."""
         result = None
         for item in self.analyze_segments_iter(segments_list, language):
             if item.get("status") == "finished":
@@ -384,13 +305,7 @@ class CharacterAnalyzer:
         segments_list: list,
         language: str = "french",
     ) -> Generator[Dict[str, Any], None, None]:
-        """Generator version: yields progress updates during analysis.
-
-        Yields dicts with keys:
-        - status: "init", "batch_start", "batch_done", "finished"
-        - msg: Human-readable status text
-        - result: (tags_dict, char_list) when status is "finished"
-        """
+        """Generator version: yields progress updates during analysis."""
         all_tags: Dict[str, SpeechTag] = {}
         all_chars: List[str] = []
         batch: List[dict] = []
@@ -426,7 +341,6 @@ class CharacterAnalyzer:
                     "msg": f"Batch {batch_num} complete. Found {len(all_chars)} characters so far.",
                 }
 
-        # Process remaining segments
         if batch:
             batch_num += 1
             yield {"status": "batch_start", "msg": f"Analyzing Final Batch {batch_num}..."}
@@ -446,11 +360,7 @@ class CharacterAnalyzer:
 
         unique_chars = list(dict.fromkeys(all_chars))
         logger.info(f"Analysis done: {len(all_tags)} segments, {len(unique_chars)} characters")
-        yield {
-            "status": "finished",
-            "msg": "Analysis complete!",
-            "result": (all_tags, unique_chars),
-        }
+        yield {"status": "finished", "msg": "Analysis complete!", "result": (all_tags, unique_chars)}
 
     def _analyze_batch(
         self,
@@ -489,7 +399,7 @@ class CharacterAnalyzer:
                     ],
                     temperature=0.1,
                     max_tokens=4000,
-                    timeout=300000
+                    timeout=300.0,
                 )
 
                 content = response.choices[0].message.content.strip()
@@ -501,7 +411,7 @@ class CharacterAnalyzer:
                     )
                     continue
 
-                # Unwrap nested dicts (some models wrap the array)
+                # Unwrap nested dicts
                 if isinstance(parsed, dict):
                     for key in ("analysis", "result", "data", "tags"):
                         if key in parsed and isinstance(parsed[key], list):
@@ -563,7 +473,7 @@ class CharacterAnalyzer:
                 logger.info(f"Retrying in {wait_time:.1f}s...")
                 time.sleep(wait_time)
 
-        # Fallback: create narrator-only tags
+        # Fallback: narrator-only tags
         logger.warning(
             f"Analysis failed after {self._max_retries} attempts, using fallback."
         )
@@ -607,15 +517,14 @@ class CharacterAnalyzer:
             tags[seg_id] = tag
         return tags
 
-    @staticmethod
-    def _extract_json(text: str) -> Any:
-        """Extract JSON from text, handling markdown and conversational text."""
+    def _extract_json(self, text: str) -> Any:
+        """Extract JSON from text, handling markdown, JSONL, and conversational text."""
         text = text.strip()
         if not text:
             return None
 
         # Remove markdown code blocks
-        md_match = re.findall(r'```(?:json)?\s*\n(.*?)\n\s*```', text, re.DOTALL)
+        md_match = re.findall(r'```(?:json)?\s*\n?(.*?)\n?\s*```', text, re.DOTALL)
         if md_match:
             text = md_match[0].strip()
 
@@ -634,7 +543,42 @@ class CharacterAnalyzer:
             except json.JSONDecodeError:
                 pass
 
-        # Try to find JSON object
+        # Handle JSONL: one JSON object per line
+        lines = text.strip().split('\n')
+        jsonl_objects = []
+        for line in lines:
+            line = line.strip()
+            if line.startswith('{'):
+                depth = 0
+                for i, ch in enumerate(line):
+                    if ch == '{':
+                        depth += 1
+                    elif ch == '}':
+                        depth -= 1
+                        if depth == 0:
+                            try:
+                                obj = json.loads(line[:i + 1])
+                                jsonl_objects.append(obj)
+                            except json.JSONDecodeError:
+                                pass
+                            break
+            elif line.startswith('['):
+                try:
+                    obj = json.loads(line)
+                    jsonl_objects.append(obj)
+                except json.JSONDecodeError:
+                    pass
+
+        if jsonl_objects:
+            flattened = []
+            for obj in jsonl_objects:
+                if isinstance(obj, list):
+                    flattened.extend(obj)
+                else:
+                    flattened.append(obj)
+            return flattened if len(flattened) > 1 else (flattened[0] if flattened else None)
+
+        # Try to find a single JSON object
         start_obj = text.find("{")
         end_obj = text.rfind("}")
         if start_obj != -1 and end_obj != -1 and end_obj > start_obj:
@@ -643,7 +587,8 @@ class CharacterAnalyzer:
             except json.JSONDecodeError:
                 pass
 
-        logger.warning(f"Could not find valid JSON. Preview: {text[:200]}")
+        # Log full response for debugging
+        logger.error(f"Could not find valid JSON. Full response:\n{text}")
         return None
 
     def get_discovered_characters(self) -> List[str]:
