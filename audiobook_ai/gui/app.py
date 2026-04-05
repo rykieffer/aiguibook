@@ -201,7 +201,7 @@ class AudiobookGUI:
             return info, [], state
         except Exception as e:
             logger.error(str(e))
-            return f"Error: {e}", [], state
+            yield 100, f"Error: {e}", [], state
 
     def run_analysis(self, file_path, state: dict):
         if not state.get("parsed"):
@@ -234,7 +234,14 @@ class AudiobookGUI:
             
             cfg = self.config.get_section("analysis")
             self.analyzer = CharacterAnalyzer(cfg)
+            logger.info("About to start LLM analysis on %d segments..." % len(all_segs))
+            yield 10, "Starting LLM Analysis (this takes a few minutes)...", table_data
+            
+            # Run Analysis
             tags, chars = self.analyzer.analyze_segments(all_segs)
+            
+            # Analysis done
+            yield 90, "Processing Results...", table_data
             
             self.tags = tags
             self.characters = chars
@@ -248,12 +255,12 @@ class AudiobookGUI:
                 emo = list(set([t.emotion for t in tags.values() if t.character_name == c]))
                 table_data.append([c, count, ", ".join(emo)])
             
-            return "Analysis Complete. Found %d characters." % len(chars), table_data, state
+            yield 100, "Analysis Complete! Found %d characters." % len(chars), table_data, state
         except Exception as e:
             logger.error(str(e))
             import traceback
             traceback.print_exc()
-            return f"Error: {e}", [], state
+            yield 100, f"Error: {e}", [], state
 
     def save_analysis(self, state: dict):
         if not state.get("analyzed"): return "Nothing to save."

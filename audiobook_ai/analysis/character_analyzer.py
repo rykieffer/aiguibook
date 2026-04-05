@@ -552,6 +552,9 @@ class CharacterAnalyzer:
         md = re.findall(r'```(?:json)?\s*\n?(.*?)\n?\s*```', text, re.DOTALL)
         if md:
             text = md[0].strip()
+            
+        # FIX: Remove LLM comments (e.g., '// inferred narrator') that cause JSON errors
+        text = re.sub(r'//.*?(?=\s*[,}\]])', '', text)
 
         # Fix 1: Remove LLM comments (e.g., "null // inferred narrator")
         # Replace double-slash comments that appear outside of strings
