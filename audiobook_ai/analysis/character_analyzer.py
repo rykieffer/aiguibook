@@ -356,13 +356,33 @@ class CharacterAnalyzer:
         )
         yield {"status": "finished", "msg": "Analysis complete!", "result": (all_tags, unique_chars)}
 
+    # Dialogue marker characters (French + English quotes, dashes, etc.)
+    _DIALOGUE_MARKERS = {"\"", "\u201c", "\u201d", "\u00ab", "\u00bb", "\u2014", "\u2013", "\u002d"}
+
     def _analyze_single_segment(
         self,
         seg_id: str,
         text: str,
         language: str,
     ) -> SpeechTag:
-        """Analyze a single text segment via LLM."""
+        """Analyze a single text segment via LLM, with pre-filter for narration."""
+        # --- FAST PRE-FILTER: skip LLM for pure narration ---
+        # If no dialogue markers exist, it's 99%+ certainly narration
+        has_dialogue = any(ch in self._DIALOGUE_MARKERS for ch in text)
+        if not has_dialogue:
+            # Quick check: look for colon before quote pattern (French: Il dit : « ... »)
+            # or simple quote-dash pattern
+            import re
+            if not re.search(r'[\u00ab\u201c"]|\u2014|\u2013\s+\w+', text):
+                return SpeechTag(
+                    segment_id=seg_id,
+                    speaker_type="narrator",
+                    character_name=None,
+                    emotion="neutral",
+                    voice_id="narrator_male",
+                    emotion_instruction=EMOTION_INSTRUCTIONS_FR["neutral"],
+                )
+
         # Check cache
         cache_key = json.dumps({"id": seg_id, "text": text[:200]}, sort_keys=True)
         if cache_key in self._cache:
