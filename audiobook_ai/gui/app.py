@@ -222,34 +222,40 @@ class AudiobookGUI:
                 with gr.Tab("Voices / Voix"):
                     gr.Markdown(
                         "### Character Voices / Voix des Personnages\n"
-                        "Assign voices to each detected character and the narrator."
+                        "Assign microphone reference audio (3s+) to each character for voice cloning.\n"
+                        "If no reference is uploaded, the default narrator voice will be used."
                     )
 
                     with gr.Row():
                         with gr.Column(scale=1):
-                            characters_list = gr.JSON(
-                                label="Detected Characters / Personnages Détectés",
-                                value=[],
-                                visible=False,
-                            )
-
                             with gr.Group():
-                                gr.Markdown("#### Narrator Voice")
+                                gr.Markdown("#### Narrator Voice / Voix Narrateur")
                                 narrator_voice_select = gr.Dropdown(
                                     choices=["narrator_male", "narrator_female", "custom", "single_voice"],
                                     value="narrator_male",
                                     label="Narrator Voice / Voix du Narrateur",
                                 )
                                 narrator_ref_voice_input = gr.File(
-                                    label="Custom Narrator Reference / Référence Personnalisée",
+                                    label="Custom Narrator Reference / Référence Personnalisée\n(.wav, .mp3, min 3s)",
                                     file_types=[".wav", ".mp3"],
                                     type="filepath",
                                     visible=False,
                                 )
 
+                            # Character voice assignments rendered dynamically
                             with gr.Group():
-                                gr.Markdown("#### Character Voice Assignments")
-                                voice_assignments_row = gr.Column(visible=True)
+                                gr.Markdown("#### Character Voices / Voix des Personnages")
+                                voices_status = gr.Textbox(
+                                    label="Status / État",
+                                    value="No characters loaded. Run character analysis first.",
+                                    interactive=False,
+                                    lines=2,
+                                )
+                                character_voices_container = gr.Column()
+                                refresh_voices_btn = gr.Button(
+                                    "Refresh Character List / Rafraîchir",
+                                    variant="secondary",
+                                )
 
                         with gr.Column(scale=1):
                             with gr.Group():
@@ -265,8 +271,8 @@ class AudiobookGUI:
                                 )
                                 voice_design_sample = gr.Textbox(
                                     label="Sample Text / Texte d'Exemple",
-                                    placeholder="Text to test this voice...",
-                                    lines=3,
+                                    value="Bonjour, ceci est un test de ma voix générée. Comment me trouvez-vous ?",
+                                    lines=2,
                                 )
                                 create_voice_design_btn = gr.Button(
                                     "Create Voice / Créer Voix",
@@ -275,6 +281,48 @@ class AudiobookGUI:
                                 voice_design_output = gr.Audio(
                                     label="Generated Voice Preview / Aperçu de la Voix",
                                     type="filepath",
+                                )
+
+                            # Edge TTS voice sample generator
+                            with gr.Group():
+                                gr.Markdown("### Free Voice Samples / Échantillons Voix Gratuits\nUses Microsoft Edge TTS (free, no API key)")
+                                sample_language = gr.Dropdown(
+                                    choices=["French", "English", "German", "Spanish"],
+                                    value="French",
+                                    label="Language / Langue",
+                                )
+                                sample_voice_dropdown = gr.Dropdown(
+                                    choices=[
+                                        "fr-FR-DeniseNeural (Female)",
+                                        "fr-FR-HenriNeural (Male)",
+                                        "fr-FR-AlainNeural (Male)",
+                                        "fr-FR-BrigitteNeural (Female)",
+                                        "fr-FR-CelesteNeural (Female)",
+                                        "fr-FR-ClaudeNeural (Male)",
+                                        "fr-FR-CoralieNeural (Female)",
+                                        "fr-FR-JacquelineNeural (Female)",
+                                        "fr-FR-JeromeNeural (Male)",
+                                        "fr-FR-JosephineNeural (Female)",
+                                    ],
+                                    value="fr-FR-DeniseNeural (Female)",
+                                    label="Edge TTS Voice / Voix Edge TTS",
+                                )
+                                sample_text_input = gr.Textbox(
+                                    label="Sample Text / Texte d'Échantillon",
+                                    value="Bonjour, ceci est un échantillon de ma voix. J'espère que vous la trouvez agréable.",
+                                    lines=2,
+                                )
+                                generate_sample_btn = gr.Button(
+                                    "Generate Sample / Générer",
+                                    variant="primary",
+                                )
+                                sample_audio_output = gr.Audio(
+                                    label="Generated Sample / Échantillon Généré",
+                                    type="filepath",
+                                )
+                                assign_sample_btn = gr.Button(
+                                    "Assign to Selected Character / Assigner au Personnage",
+                                    variant="secondary",
                                 )
 
                             with gr.Group():
@@ -289,6 +337,12 @@ class AudiobookGUI:
 
                     voice_design_status = gr.Textbox(
                         label="Status / État", interactive=False,
+                    )
+
+                    refresh_voices_btn.click(
+                        fn=self._refresh_character_voices,
+                        inputs=[narrator_voice_select],
+                        outputs=[character_voices_container, voices_status],
                     )
 
                     create_voice_design_btn.click(
@@ -307,6 +361,12 @@ class AudiobookGUI:
                         fn=self._on_narrator_voice_change,
                         inputs=[narrator_voice_select],
                         outputs=[narrator_ref_voice_input],
+                    )
+
+                    generate_sample_btn.click(
+                        fn=self._on_generate_edge_tts_sample,
+                        inputs=[sample_voice_dropdown, sample_text_input, sample_language],
+                        outputs=[sample_audio_output],
                     )
 
                 # ==================== TAB 3: Preview ====================
@@ -926,6 +986,36 @@ class AudiobookGUI:
         except Exception:
             return None
 
+    def _refresh_character_voices(self, narrator_voice):
+        """Rebuild the character voices UI from discovered characters."""
+        import gradio as gr  # Import here as gr
+        
+        if not self._discovered_chars:
+            return gr.update(), "No characters discovered yet. Run analysis first."
+        
+        # For now, return a JSON summary
+        char_data = []
+        for cn in self._discovered_chars:
+            seg_count = len(self._analyzer.get_character_segments(cn))
+            emotions = list(set(
+                t.emotion for t in self._segment_tags.values()
+                if t.character_name == cn
+            ))
+            char_data.append({
+                "character": cn,
+                "segments": seg_count,
+                "emotions": list(emotions),
+                "voice_assigned": "narrator_male",
+                "has_reference": "No"
+            })
+        
+        status = f"Found {len(self._discovered_chars)} characters:\n" + "\n".join(
+            f"  • {c['character']}: {c['segments']} segments, emotions={c['emotions']}"
+            for c in char_data
+        )
+        
+        return gr.update(value=char_data), status
+    
     def _on_narrator_voice_change(self, narrator_voice):
         """Show/hide custom narrator ref input based on selection."""
         return gr.update(visible=(narrator_voice == "custom"))

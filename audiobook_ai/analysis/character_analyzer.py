@@ -472,15 +472,39 @@ class CharacterAnalyzer:
 
         total_time = time.time() - start_time
         unique_chars = list(dict.fromkeys(all_chars))
-        print(f"\nAnalysis complete! {len(all_chars)} characters in {total_time:.0f}s")
+        print(f"\nAnalysis complete! {len(unique_chars)} characters in {total_time:.0f}s")
         for cn in unique_chars:
             print(f"  - {cn}: {len(self._characters[cn])} segments")
 
-        # Deduplicate character names (single LLM call, ~30s)
-        print("\n[Deduplication] Merging character name variants...")
-        dedup_map = self.deduplicate_characters(unique_chars)
-        unique_merged = sorted(set(dedup_map.values()))
-        print(f"[Deduplication] {len(unique_chars)} -> {len(unique_merged)} unique characters\n")
+        # Deduplicate character name variants - merge similar names
+        # Uses a simple heuristic: if one name is a substring of another, merge them
+        deduped = self._deduplicate_characters(unique_chars)
+        unique_merged = list(deduped.keys())
+        print(f"\n[DEDUP] Merged {len(unique_chars)} characters -> {len(unique_merged)} unique characters:")
+        for canonical, variants in deduped.items():
+            if len(variants) > 1:
+                print(f"  {canonical} <- {', '.join(variants)}")
+
+        logger.info(
+            f"Analysis complete: {len(all_tags)} segments, "
+            f"{len(unique_chars)} chars -> {len(unique_merged)} deduped in {total_time:.0f}s"
+        )
+
+        # Recalculate segment counts with deduped names
+        merged_chars = {}
+        for cn in unique_merged:
+            merged_chars[cn] = set()
+        for seg_id, tag in all_tags.items():
+            if tag.character_name:
+                # Find which canonical group this variant belongs to
+                for canonical, variants in deduped.items():
+                    if tag.character_name in variants:
+                        merged_chars[canonical].add(seg_id)
+                        break
+
+        self._characters = merged_chars
+
+        yield {"status": "finished", "msg": "Analysis complete!", "result": (all_tags, unique_merged)}
         logger.info(
             f"Analysis complete: {len(all_tags)} segments, "
             f"{len(unique_merged)} unique characters in {total_time:.0f}s"
