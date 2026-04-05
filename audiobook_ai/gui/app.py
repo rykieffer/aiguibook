@@ -170,6 +170,21 @@ class AudiobookGUI:
 
                     parse_output = gr.Markdown("")
 
+                    with gr.Row():
+                        load_analysis_btn = gr.Button(
+                            "Load Saved Analysis / Charger Analyse Sauvegardée",
+                            variant="secondary",
+                        )
+                        analysis_file_input = gr.File(
+                            label="Analysis JSON File / Fichier JSON d'Analyse",
+                            file_types=[".json"],
+                            type="filepath",
+                        )
+                    analysis_load_status = gr.Textbox(
+                        label="Load Status / État du Chargement",
+                        interactive=False,
+                    )
+
                     analyse_btn = gr.Button("Run Character Analysis / Analyse Personnages", variant="primary")
                     analysis_status = gr.Textbox(label="Analysis Status / État", interactive=False)
                     character_list = gr.JSON(label="Characters and Suggestions / Personnages")
@@ -179,6 +194,13 @@ class AudiobookGUI:
                         inputs=[app_state],
                         outputs=[analysis_status, character_list, app_state],
                     )
+
+                    load_analysis_btn.click(
+                        fn=self._on_load_analysis,
+                        inputs=[analysis_file_input],
+                        outputs=[analysis_load_status, character_list, app_state],
+                    )
+
                     parse_btn.click(
                         fn=self._on_parse_epub,
                         inputs=[epub_file_upload, language_select, tts_model_select,
@@ -771,6 +793,57 @@ class AudiobookGUI:
             import traceback
             self._log(f"Analysis error: {e}\n{traceback.format_exc()}")
             yield f"Error: {e}", [], state
+
+    def _on_load_analysis(self, analysis_file_path):
+        """Load a previously saved character analysis from a JSON file.
+
+        Args:
+            analysis_file_path: Path to the analysis JSON file
+
+        Returns:
+            (status message, character list dict, updated state)
+        """
+        if not analysis_file_path:
+            yield "No file selected.", [], {"loaded": False}
+            return
+
+        try:
+            from audiobook_ai.analysis.character_analyzer import CharacterAnalyzer
+            segment_tags, char_list, dedup_map = CharacterAnalyzer.load_analysis(
+                analysis_file_path
+            )
+            self._segment_tags = segment_tags
+            self._discovered_chars = char_list
+            self._dedup_map = dedup_map
+
+            # Build character suggestions
+            chars = []
+            tags = list(self._segment_tags.values())
+            for cn in sorted(self._discovered_chars):
+                emotion_list = list(set(
+                    t.emotion for t in tags
+                    if t.character_name is not None and
+                       self._dedup_map.get(t.character_name, t.character_name) == cn
+                ))
+                seg_count = sum(
+                    1 for t in tags
+                    if t.character_name is not None and
+                       self._dedup_map.get(t.character_name, t.character_name) == cn
+                )
+                chars.append({
+                    "character": cn,
+                    "suggested_voice": "narrator_male",
+                    "segments": seg_count,
+                    "emotions": emotion_list,
+                })
+
+            self._log(f"Loaded analysis: {len(char_list)} characters, {len(segment_tags)} segments")
+            state = {"loaded": True, "parsed": True, "analyzed": True}
+            msg = f"Loaded {len(char_list)} characters from {analysis_file_path}"
+            yield msg, chars, state
+        except Exception as e:
+            self._log(f"Error loading analysis: {e}")
+            yield f"Error: {e}", [], {"loaded": False}
 
     def _on_setup_default_voices(self):
         """Create default voice profiles."""
