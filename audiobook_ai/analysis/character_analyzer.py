@@ -374,16 +374,16 @@ class CharacterAnalyzer:
 
         for attempt in range(self._max_retries):
             try:
+                # Log prompt length for debugging
+                sys_prompt = "You are an expert literary analyst. Respond ONLY with a valid JSON array. No text, no explanation, no markdown."
+                logger.info(f"Prompt size: system={len(sys_prompt)} chars, user={len(prompt)} chars, total={len(sys_prompt)+len(prompt)} chars")
+
                 response = self._session.chat.completions.create(
                     model=self._model,
                     messages=[
                         {
                             "role": "system",
-                            "content": (
-                                "You are an expert literary analyst. "
-                                "Respond ONLY with a valid JSON array. "
-                                "No text, no explanation, no markdown."
-                            ),
+                            "content": sys_prompt,
                         },
                         {"role": "user", "content": prompt},
                     ],
@@ -392,7 +392,12 @@ class CharacterAnalyzer:
                     timeout=300.0,
                 )
 
-                content = response.choices[0].message.content.strip()
+                content = response.choices[0].message.content
+                # Show raw content with repr to reveal invisible chars
+                is_empty = content is None or content.strip() == ""
+                logger.info(f"LLM response: is_empty={is_empty}, type={type(content).__name__}, length={len(content) if content else 0}")
+                if is_empty or len(content) < 20:
+                    logger.error(f"LLM returned empty/truncated response. Repr: {repr(content[:500])}")
                 parsed = self._extract_json(content)
 
                 if parsed is None:
