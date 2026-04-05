@@ -674,6 +674,11 @@ class CharacterAnalyzer:
             char_name = None
 
         emotion = d.get("emotion", "neutral")
+        # LLM sometimes returns a list instead of string — take first element
+        if isinstance(emotion, list):
+            emotion = emotion[0] if emotion else "neutral"
+        if not isinstance(emotion, str):
+            emotion = "neutral"
         if emotion.lower() not in [e.lower() for e in VALID_EMOTIONS]:
             emotion = "neutral"
 
