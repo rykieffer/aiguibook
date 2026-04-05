@@ -374,31 +374,60 @@ class CharacterAnalyzer:
 
         for attempt in range(self._max_retries):
             try:
-                # Log prompt length for debugging
+                # Log prompt size for debugging
                 sys_prompt = "You are an expert literary analyst. Respond ONLY with a valid JSON array. No text, no explanation, no markdown."
-                logger.info(f"Prompt size: system={len(sys_prompt)} chars, user={len(prompt)} chars, total={len(sys_prompt)+len(prompt)} chars")
+                prompt_size = len(sys_prompt) + len(prompt)
+                prompt_tokens_est = prompt_size // 4  # rough estimate
+                total_chars = len(prompt)
+                logger.info(
+                    f"LLM request: model={self._model}, backend={self._backend}, "
+                    f"prompt_chars={total_chars}, prompt_tokens~{prompt_tokens_est}"
+                )
 
                 response = self._session.chat.completions.create(
                     model=self._model,
                     messages=[
-                        {
-                            "role": "system",
-                            "content": sys_prompt,
-                        },
+                        {"role": "system", "content": sys_prompt},
                         {"role": "user", "content": prompt},
                     ],
                     temperature=0.1,
-                    max_tokens=4000,
+                    # Lower max_tokens since many models choke on high values
+                    max_tokens=2000,
                     timeout=300.0,
                 )
 
-                content = response.choices[0].message.content
-                # Show raw content with repr to reveal invisible chars
-                is_empty = content is None or content.strip() == ""
-                logger.info(f"LLM response: is_empty={is_empty}, type={type(content).__name__}, length={len(content) if content else 0}")
-                if is_empty or len(content) < 20:
-                    logger.error(f"LLM returned empty/truncated response. Repr: {repr(content[:500])}")
-                parsed = self._extract_json(content)
+                finish_reason = response.choices[0].finish_reason
+                raw_content = response.choices[0].message.content
+                is_empty = raw_content is None or raw_content.strip() == ""
+                
+                logger.info(
+                    f"LLM response: finish_reason={finish_reason}, "
+                    f"content_type={type(raw_content).__name__}, "
+                    f"content_len={len(raw_content) if raw_content else 0}, "
+                    f"is_empty={is_empty}"
+                )
+
+                # Always print raw response for debugging
+                if is_empty or len(raw_content) < 10:
+                    print(f"\n{'='*70}")
+                    print(f"  LLM RAW RESPONSE (attempt {attempt + 1}/{self._max_retries})")
+                    print(f"  finish_reason: {finish_reason}")
+                    print(f"  content_repr: {repr(raw_content)}")
+                    print(f"{'='*70}\n")
+                    logger.error(
+                        f"LLM returned empty/truncated response! "
+                        f"finish_reason={finish_reason}, repr={repr(raw_content)}"
+                    )
+                else:
+                    # Show first 200 chars of response
+                    print(f"\n{'='*70}")
+                    print(f"  LLM RESPONSE (first 300 chars)")
+                    print(f"{'='*70}")
+                    print(raw_content[:300])
+                    print(f"... (total {len(raw_content)} chars)")
+                    print(f"{'='*70}\n")
+
+                content = raw_content.strip() if raw_content else ""
 
                 if parsed is None:
                     # Always print the raw response so the user can see it
