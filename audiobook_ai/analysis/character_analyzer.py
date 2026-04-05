@@ -556,11 +556,6 @@ class CharacterAnalyzer:
         # FIX: Remove LLM comments (e.g., '// inferred narrator') that cause JSON errors
         text = re.sub(r'//.*?(?=\s*[,}\]])', '', text)
 
-        # Fix 1: Remove LLM comments (e.g., "null // inferred narrator")
-        # Replace double-slash comments that appear outside of strings
-        # Simple regex to remove // ... until end of line or closing brace
-        import re
-        text = re.sub(r'//.*?(?=,|\}|\]|\n)', '', text)
 
         # Fix 2: Handle multiline values if LLM messes up newlines in JSON
         # (This is handled by the bracket extractor mostly, but good cleanup)
