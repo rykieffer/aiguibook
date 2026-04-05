@@ -45,32 +45,18 @@ EMOTION_INSTRUCTIONS_EN = {
     "neutral": "Speak in a neutral, natural tone without particular emotion",
 }
 
-ANALYSIS_PROMPT_TEMPLATE = """You are an expert literary analyst for audiobook production.
+# Simple per-segment prompt — very short, local model friendly
+SEGMENT_PROMPT = '''Analyze this text segment for audiobook production.
 
-Analyze each text segment and identify:
-1. Is it "narrator" or "dialogue" (speaker_type)
-2. Who is speaking - character_name (or null if narrator)
-3. emotion: exactly one of: calm, excited, angry, sad, whisper, tense, urgent, amused, contemptuous, surprised, neutral
-4. emotion_instruction: a short French phrase telling the TTS how to speak
+TEXT: "{text}"
 
-SEGMENTS:
-{segments_json}
+Return ONLY a JSON object with these fields:
+- speaker_type: "narrator" if narration, or "dialogue" if a character speaks
+- character_name: The character's name if dialogue, or null for narrator
+- emotion: one of: calm, excited, angry, sad, whisper, tense, urgent, amused, contemptuous, surprised, neutral
 
-LANGUAGE: {language}
-
-Voice profiles you can suggest: narrator_male, narrator_female, young_male, young_female, elder_male, elder_female, robotic, custom.
-- For narrator segments use narrator_male
-- For dialogue, suggest the best matching voice profile
-- voice_id should match suggested_voice_id
-
-RESPOND WITH JSON ONLY. The first character of your response must be [ and the last must be ].
-Do NOT include any text, explanation, or markdown before or after the JSON.
-Use this exact JSON structure for each segment:
-[
-  {{"segment_id": "...", "speaker_type": "narrator", "character_name": null, "emotion": "calm", "suggested_voice_id": "narrator_male", "voice_id": "narrator_male", "emotion_instruction": "Parlez avec un ton calme et pose", "character_description": "Narrateur"}},
-  {{"segment_id": "...", "speaker_type": "dialogue", "character_name": "Jean", "emotion": "angry", "suggested_voice_id": "young_male", "voice_id": "young_male", "emotion_instruction": "Parlez avec colere et tension", "character_description": "Young male"}}
-]
-"""
+Example: {{"speaker_type":"narrator","character_name":null,"emotion":"calm"}}
+Example: {{"speaker_type":"dialogue","character_name":"Jean","emotion":"angry"}}'''
 
 
 @dataclass
@@ -119,8 +105,7 @@ def get_llm_models_from_backend(
             if model_ids:
                 return True, model_ids, ""
             return False, [], "No models returned"
-        except (urllib.error.URLError, urllib.error.HTTPError, json.JSONDecodeError,
-                Exception) as e:
+        except Exception as e:
             return False, [], str(e)
 
     elif backend == "ollama":
@@ -133,8 +118,7 @@ def get_llm_models_from_backend(
             if model_ids:
                 return True, model_ids, ""
             return False, [], "No models returned"
-        except (urllib.error.URLError, urllib.error.HTTPError, json.JSONDecodeError,
-                Exception) as e:
+        except Exception as e:
             return False, [], str(e)
 
     elif backend == "openrouter":
@@ -152,8 +136,7 @@ def get_llm_models_from_backend(
             if model_ids:
                 return True, model_ids, ""
             return False, [], "No models returned"
-        except (urllib.error.URLError, urllib.error.HTTPError, json.JSONDecodeError,
-                Exception) as e:
+        except Exception as e:
             return False, [], str(e)
 
     return False, [], f"Unknown backend: {backend}"
@@ -200,13 +183,17 @@ def test_llm_connection(
 
 
 class CharacterAnalyzer:
-    """Analyzes text segments to detect characters, emotions, and suggest voices."""
+    """Analyzes text segments one-by-one to detect characters, emotions, and voices.
+    
+    Uses single-segment prompts for reliability with local models.
+    """
 
     def __init__(self, config: dict, session=None):
         self.config = config
         self._backend = config.get("llm_backend", "lmstudio")
-        self._max_retries = config.get("max_retries", 3)
-        self._batch_size = config.get("batch_size", 5)
+        self._max_retries = 2  # Lower retries since each call is fast
+        # Process one segment at a time for reliability
+        self._batch_size = 1
 
         self._cache: Dict[str, Dict] = {}
         self._characters: Dict[str, set] = {}
@@ -230,7 +217,6 @@ class CharacterAnalyzer:
 
             model = self.config.get("lmstudio_model", "")
 
-            # Auto-detect model if not configured
             if not model:
                 logger.info("No LM Studio model configured, auto-detecting...")
                 ok, models, err = get_llm_models_from_backend("lmstudio", base_url=base_url)
@@ -240,8 +226,7 @@ class CharacterAnalyzer:
                     self.config["lmstudio_model"] = model
                 else:
                     raise ValueError(
-                        f"No LM Studio model found. Load a model in LM Studio first. "
-                        f"Error: {err}"
+                        f"No LM Studio model found. Load a model first. Error: {err}"
                     )
 
             client = OpenAI(base_url=base_url, api_key="unused")
@@ -283,7 +268,7 @@ class CharacterAnalyzer:
         segments_list: list,
         language: str = "french",
     ) -> Tuple[Dict[str, SpeechTag], List[str]]:
-        """Blocking version: analyzes all segments and returns final result."""
+        """Analyze all segments, returning (tags_dict, character_list)."""
         result = None
         for item in self.analyze_segments_iter(segments_list, language):
             if item.get("status") == "finished":
@@ -295,412 +280,216 @@ class CharacterAnalyzer:
         segments_list: list,
         language: str = "french",
     ) -> Generator[Dict[str, Any], None, None]:
-        """Generator version: yields progress updates during analysis."""
+        """Generator: yields progress updates during analysis."""
         all_tags: Dict[str, SpeechTag] = {}
         all_chars: List[str] = []
-        batch: List[dict] = []
         total = len(segments_list)
-        batch_num = 0
+        done = 0
 
         if total > 0:
-            yield {"status": "init", "msg": f"Initialized. Total {total} segments to analyze."}
+            yield {"status": "init", "msg": f"Initialized. {total} segments to analyze."}
 
-        for segment in segments_list:
+        for i, segment in enumerate(segments_list):
             seg_id = segment.id if hasattr(segment, "id") else segment.get("id", "")
             seg_text = segment.text if hasattr(segment, "text") else segment.get("text", "")
-            batch.append({"segment_id": seg_id, "text": seg_text})
-
-            if len(batch) >= self._batch_size:
-                batch_num += 1
-                yield {"status": "batch_start", "msg": f"Analyzing Batch {batch_num}..."}
-
-                tags, chars = self._analyze_batch(batch, language)
-                all_tags.update(tags)
-                all_chars.extend(chars)
-
-                for char_name in chars:
-                    if char_name not in self._characters:
-                        self._characters[char_name] = set()
-                for tag in all_tags.values():
-                    if tag.character_name:
-                        self._characters[tag.character_name].add(tag.segment_id)
-
-                batch.clear()
-                yield {
-                    "status": "batch_done",
-                    "msg": f"Batch {batch_num} complete. Found {len(all_chars)} characters so far.",
-                }
-
-        if batch:
-            batch_num += 1
-            yield {"status": "batch_start", "msg": f"Analyzing Final Batch {batch_num}..."}
-            tags, chars = self._analyze_batch(batch, language)
-            all_tags.update(tags)
-            all_chars.extend(chars)
-            for char_name in chars:
-                if char_name not in self._characters:
-                    self._characters[char_name] = set()
-            for tag in all_tags.values():
-                if tag.character_name:
-                    self._characters[tag.character_name].add(tag.segment_id)
+            
+            done = i + 1
             yield {
-                "status": "batch_done",
-                "msg": f"All batches complete. Found {len(all_chars)} characters.",
+                "status": "analyzing",
+                "msg": f"Analyzing segment {done}/{total}: {seg_id}",
             }
 
+            if not seg_text.strip():
+                tag = SpeechTag(
+                    segment_id=seg_id,
+                    speaker_type="narrator",
+                    character_name=None,
+                    emotion="neutral",
+                    voice_id="narrator_male",
+                    emotion_instruction=EMOTION_INSTRUCTIONS_FR["neutral"],
+                )
+                all_tags[seg_id] = tag
+                continue
+
+            tag = self._analyze_single_segment(seg_id, seg_text, language)
+            all_tags[seg_id] = tag
+
+            if tag.character_name:
+                if tag.character_name not in self._characters:
+                    self._characters[tag.character_name] = set()
+                self._characters[tag.character_name].add(seg_id)
+                if tag.character_name not in all_chars:
+                    all_chars.append(tag.character_name)
+
+            if done % 10 == 0 or done == total:
+                yield {
+                    "status": "progress",
+                    "msg": f"{done}/{total} segments analyzed. {len(all_chars)} characters found.",
+                }
+
         unique_chars = list(dict.fromkeys(all_chars))
-        logger.info(f"Analysis done: {len(all_tags)} segments, {len(unique_chars)} characters")
+        logger.info(f"Analysis complete: {len(all_tags)} segments, {len(unique_chars)} characters")
         yield {"status": "finished", "msg": "Analysis complete!", "result": (all_tags, unique_chars)}
 
-    def _analyze_batch(
+    def _analyze_single_segment(
         self,
-        batch: List[dict],
+        seg_id: str,
+        text: str,
         language: str,
-    ) -> Tuple[Dict[str, SpeechTag], List[str]]:
-        """Analyze a single batch of segments via LLM."""
-        if not batch:
-            return {}, []
-
-        cache_key = json.dumps(batch, sort_keys=True)
+    ) -> SpeechTag:
+        """Analyze a single text segment via LLM."""
+        # Check cache
+        cache_key = json.dumps({"id": seg_id, "text": text[:200]}, sort_keys=True)
         if cache_key in self._cache:
             cached = self._cache[cache_key]
-            return self._dict_to_tags(cached), cached.get("characters", [])
+            return self._tag_from_dict(cached)
 
-        segments_json = json.dumps(batch, ensure_ascii=False, indent=2)
-        prompt = ANALYSIS_PROMPT_TEMPLATE.format(
-            segments_json=segments_json,
-            language=language,
-        )
+        prompt = SEGMENT_PROMPT.format(text=text[:500])  # Truncate very long text
 
         for attempt in range(self._max_retries):
             try:
-                # Log prompt size for debugging
-                sys_prompt = "You are an expert literary analyst. Respond ONLY with a valid JSON array. No text, no explanation, no markdown."
-                prompt_size = len(sys_prompt) + len(prompt)
-                prompt_tokens_est = prompt_size // 4
-                total_chars = len(prompt)
-                logger.info(
-                    f"LLM request: model={self._model}, backend={self._backend}, "
-                    f"prompt_chars={total_chars}, prompt_tokens~{prompt_tokens_est}"
-                )
-
                 response = self._session.chat.completions.create(
                     model=self._model,
-                    messages=[
-                        {"role": "system", "content": sys_prompt},
-                        {"role": "user", "content": prompt},
-                    ],
+                    messages=[{"role": "user", "content": prompt}],
                     temperature=0.1,
-                    timeout=300.0,
+                    timeout=120.0,
                 )
 
-                finish_reason = response.choices[0].finish_reason
-                raw_content = response.choices[0].message.content
-                content = raw_content.strip() if raw_content else ""
+                raw = response.choices[0].message.content or ""
+                content = raw.strip()
 
-                # Log diagnostics
-                is_empty = not content
-                logger.info(
-                    f"LLM response: finish_reason={finish_reason}, "
-                    f"content_len={len(raw_content) if raw_content else 0}, "
-                    f"is_empty={is_empty}"
-                )
+                # Debug output
+                print(f"\n[{seg_id}] LLM response (attempt {attempt+1}): {content[:200]}")
 
-                # Show raw response for debugging
-                if is_empty:
-                    print(f"\n{'='*70}")
-                    print(f"  LLM EMPTY RESPONSE (attempt {attempt + 1}/{self._max_retries})")
-                    print(f"  finish_reason: {finish_reason}")
-                    print(f"  content_repr: {repr(raw_content)}")
-                    print(f"{'='*70}\n")
-                    logger.error(f"LLM returned empty response! finish_reason={finish_reason}")
-                    if finish_reason == "length":
-                        logger.error(
-                            "LM Studio is likely truncating output. In LM Studio: "
-                            "go to Settings > Model and set Max Context to 8192 or higher."
-                        )
-                    continue
-
-                # Show first part of response
-                if len(content) <= 500:
-                    print(f"\n{'='*70}")
-                    print(f"  LLM RESPONSE (full, {len(content)} chars)")
-                    print(f"{'='*70}")
-                    print(content)
-                    print(f"{'='*70}\n")
-                else:
-                    print(f"\n{'='*70}")
-                    print(f"  LLM RESPONSE (first 500 of {len(content)} chars)")
-                    print(f"{'='*70}")
-                    print(content[:500])
-                    print(f"\n...(truncated)")
-                    print(f"{'='*70}\n")
-
-                # Try to extract JSON
-                parsed = self._extract_json(content)
-
-                if parsed is None:
-                    logger.warning(
-                        f"LLM returned non-JSON response (attempt {attempt + 1})"
-                    )
-                    continue
-
-                # Unwrap nested dicts
-                if isinstance(parsed, dict):
-                    for key in ("analysis", "result", "data", "tags"):
-                        if key in parsed and isinstance(parsed[key], list):
-                            parsed = parsed[key]
-                            break
-
-                # Handle single object instead of array
-                if isinstance(parsed, dict):
-                    parsed = [parsed]
-
-                if not isinstance(parsed, list):
-                    logger.warning(
-                        f"Expected JSON array, got {type(parsed).__name__} "
-                        f"(attempt {attempt + 1})"
-                    )
+                if not content:
                     if attempt < self._max_retries - 1:
+                        logger.warning(f"Empty response for {seg_id}, retrying...")
+                        time.sleep(0.5)
                         continue
-                    return {}, []
+                    break
 
-                tags_dict: Dict[str, SpeechTag] = {}
-                characters: List[str] = []
-                for item in parsed:
-                    if not isinstance(item, dict):
+                parsed = self._extract_json(content)
+                if parsed is None:
+                    if attempt < self._max_retries - 1:
+                        logger.warning(f"No JSON for {seg_id}, retrying...")
+                        time.sleep(0.5)
                         continue
-                    seg_id = item.get("segment_id", "")
-                    if not seg_id:
-                        continue
-                    char_name = item.get("character_name")
-                    if char_name and isinstance(char_name, str):
-                        characters.append(char_name)
-                    elif char_name is not None:
-                        char_name = None
+                    break
 
-                    tag = SpeechTag(
-                        segment_id=seg_id,
-                        speaker_type=item.get("speaker_type", "narrator"),
-                        character_name=char_name,
-                        emotion=item.get("emotion", "neutral"),
-                        voice_id=item.get("voice_id", "narrator_male"),
-                        emotion_instruction=item.get("emotion_instruction", ""),
-                        character_description=item.get("character_description", ""),
-                        suggested_voice_id=item.get("suggested_voice_id", "narrator_male"),
-                    )
-                    tags_dict[seg_id] = tag
+                # If parser returns a list, take first element
+                if isinstance(parsed, list):
+                    parsed = parsed[0] if parsed else None
 
-                if tags_dict:
-                    self._cache[cache_key] = {
-                        "analysis": parsed,
-                        "characters": characters,
-                    }
-                    for cn in characters:
-                        if cn not in self._characters:
-                            self._characters[cn] = set()
-                    return tags_dict, characters
+                if parsed and isinstance(parsed, dict):
+                    tag = self._tag_from_dict({
+                        "segment_id": seg_id,
+                        "speaker_type": parsed.get("speaker_type", "narrator"),
+                        "character_name": parsed.get("character_name"),
+                        "emotion": parsed.get("emotion", "neutral"),
+                    })
+                    self._cache[cache_key] = {"tag": parsed}
+                    return tag
 
             except Exception as e:
-                logger.warning(
-                    f"LLM analysis error (attempt {attempt + 1}/{self._max_retries}): {e}"
-                )
+                logger.warning(f"LLM error for {seg_id} (attempt {attempt+1}): {e}")
+                if attempt < self._max_retries - 1:
+                    time.sleep(1)
 
-            if attempt < self._max_retries - 1:
-                wait_time = 1.5 * (2 ** attempt)
-                logger.info(f"Retrying in {wait_time:.1f}s...")
-                time.sleep(wait_time)
-
-        # Fallback: narrator-only tags
-        logger.warning(
-            f"Analysis failed after {self._max_retries} attempts, using fallback."
+        # Fallback: all narrator
+        logger.debug(f"Using fallback for {seg_id}")
+        return SpeechTag(
+            segment_id=seg_id,
+            speaker_type="narrator",
+            character_name=None,
+            emotion="neutral",
+            voice_id="narrator_male",
+            emotion_instruction=EMOTION_INSTRUCTIONS_FR["neutral"],
         )
-        fallback_tags: Dict[str, SpeechTag] = {}
-        for seg in batch:
-            tid = seg.get("segment_id", "")
-            fallback_tags[tid] = SpeechTag(
-                segment_id=tid,
-                speaker_type="narrator",
-                character_name=None,
-                emotion="neutral",
-                voice_id="narrator_male",
-                emotion_instruction=EMOTION_INSTRUCTIONS_FR["neutral"],
-                character_description="Narrator",
-                suggested_voice_id="narrator_male",
-            )
-        return fallback_tags, []
 
-    def _dict_to_tags(self, cached: dict) -> Dict[str, SpeechTag]:
-        """Convert cached dict back to SpeechTag dict."""
-        analysis = cached.get("analysis", [])
-        if not isinstance(analysis, list):
-            return {}
-        tags: Dict[str, SpeechTag] = {}
-        for item in analysis:
-            if not isinstance(item, dict):
-                continue
-            seg_id = item.get("segment_id", "")
-            if not seg_id:
-                continue
-            tag = SpeechTag(
-                segment_id=seg_id,
-                speaker_type=item.get("speaker_type", "narrator"),
-                character_name=item.get("character_name"),
-                emotion=item.get("emotion", "neutral"),
-                voice_id=item.get("voice_id", "narrator_male"),
-                emotion_instruction=item.get("emotion_instruction", ""),
-                character_description=item.get("character_description", ""),
-                suggested_voice_id=item.get("suggested_voice_id", "narrator_male"),
-            )
-            tags[seg_id] = tag
-        return tags
-
-    def _extract_json(self, text: str) -> Any:
-        """Extract JSON from text. Multi-pass approach:
-        1. Full direct parse (clean JSON)
-        2. Markdown code block extraction
-        3. Balanced array extraction (tracking depth + strings)
-        4. JSONL extraction (multiple objects, one per line/block)
-        5. Balanced object extraction
-        """
+    @staticmethod
+    def _extract_json(text: str) -> Optional[Any]:
+        """Extract JSON from text with balanced bracket tracking."""
         text = text.strip()
         if not text:
             return None
 
-        # Pass 1: Direct parse
+        # Remove markdown
+        md = re.findall(r'```(?:json)?\s*\n?(.*?)\n?\s*```', text, re.DOTALL)
+        if md:
+            text = md[0].strip()
+
+        # Try direct parse
         try:
             return json.loads(text)
         except json.JSONDecodeError:
             pass
 
-        # Pass 2: Remove markdown code blocks and retry
-        md_match = re.findall(r'```(?:json)?\s*[\n\r]?(.*?)[\n\r]?\s*```', text, re.DOTALL)
-        if md_match:
-            inner = md_match[0].strip()
-            try:
-                return json.loads(inner)
-            except (json.JSONDecodeError, ValueError):
-                text = inner
-
-        # Pass 3: Balanced JSON array extraction
-        result = self._extract_balanced_json(text, '[', ']')
-        if result is not None and isinstance(result, list):
-            return result
-
-        # Pass 4: Extract JSON objects as a JSONL array
-        jsonl = self._extract_jsonl(text)
-        if jsonl:
-            return jsonl
-
-        # Pass 5: Balanced single object extraction
-        result = self._extract_balanced_json(text, '{', '}')
-        if result is not None and isinstance(result, dict):
-            return result
-
-        # All passes failed
-        logger.error(
-            f"JSON extraction FAILED (first 1500 chars):\n"
-            f"{'='*60}\n{text[:1500]}\n{'='*60}"
-        )
-        return None
-
-    @staticmethod
-    def _extract_balanced_json(text: str, open_ch: str, close_ch: str) -> Optional[Any]:
-        """Extract first balanced JSON from text, handling strings containing brackets/braces."""
+        # Try balanced bracket extraction
         for start in range(len(text)):
-            if text[start] != open_ch:
+            if text[start] not in ('{', '['):
                 continue
+            open_ch = text[start]
+            close_ch = '}' if open_ch == '{' else ']'
             depth = 0
-            in_string = False
+            in_str = False
             escaped = False
             for i in range(start, len(text)):
                 ch = text[i]
                 if escaped:
                     escaped = False
                     continue
-                if ch == '\\' and in_string:
+                if ch == '\\':
                     escaped = True
                     continue
                 if ch == '"':
-                    in_string = not in_string
+                    in_str = not in_str
                     continue
-                if not in_string:
+                if not in_str:
                     if ch == open_ch:
                         depth += 1
                     elif ch == close_ch:
                         depth -= 1
                         if depth == 0:
-                            candidate = text[start:i + 1]
                             try:
-                                return json.loads(candidate)
-                            except (json.JSONDecodeError, ValueError):
+                                return json.loads(text[start:i + 1])
+                            except json.JSONDecodeError:
                                 pass
                             break
+
         return None
 
     @staticmethod
-    def _extract_jsonl(text: str) -> Optional[list]:
-        """Extract multiple JSON objects from text (one per line or block).
-        Handles the format where models return:
-        {obj1}
-        {obj2}
-        {obj3}
-        """
-        results = []
-        i = 0
-        while i < len(text):
-            line = text[i:].lstrip()
-            if line.startswith('{'):
-                obj = CharacterAnalyzer._extract_balanced_json(line, '{', '}')
-                if obj and isinstance(obj, dict):
-                    results.append(obj)
-                    # Skip past the extracted object
-                    for j in range(len(line)):
-                        if line[j] != '{':
-                            break
-                        depth = 0
-                        in_str = False
-                        esc = False
-                        for k in range(j, len(line)):
-                            ch = line[k]
-                            if not esc and ch == '\\':
-                                esc = True
-                                continue
-                            if ch == '"':
-                                in_str = not in_str
-                            if not in_str:
-                                if ch == '{':
-                                    depth += 1
-                                elif ch == '}':
-                                    depth -= 1
-                                    if depth == 0:
-                                        i = i + k + 1
-                                        break
-                            if esc:
-                                esc = False
-                        break
-                    continue
-            if line.startswith('['):
-                arr = CharacterAnalyzer._extract_balanced_json(line, '[', ']')
-                if arr and isinstance(arr, list):
-                    results.extend(arr)
-                    break  # If we got a full array, we're done
-                break
-            # Skip to next line
-            nl = line.find('\n')
-            if nl == -1:
-                break
-            i += text[i:].lfind(line) + nl + 1 if nl > 0 else 1
+    def _tag_from_dict(d: dict) -> SpeechTag:
+        """Convert a dict to a SpeechTag."""
+        speaker_type = d.get("speaker_type", "narrator")
+        if speaker_type not in ("narrator", "dialogue"):
+            speaker_type = "narrator"
 
-        # Flatten single-element lists
-        flat = []
-        for r in results:
-            if isinstance(r, list):
-                flat.extend(r)
-            else:
-                flat.append(r)
+        char_name = d.get("character_name")
+        if char_name and isinstance(char_name, str):
+            char_name = char_name.strip()
+            if not char_name or char_name.lower() in ("null", "none", ""):
+                char_name = None
+        else:
+            char_name = None
 
-        return flat if flat else None
+        emotion = d.get("emotion", "neutral")
+        if emotion.lower() not in [e.lower() for e in VALID_EMOTIONS]:
+            emotion = "neutral"
+
+        voice_id = "narrator_male" if speaker_type == "narrator" else (
+            char_name.lower().replace(" ", "_") if char_name else "narrator_male"
+        )
+
+        instr_dict = EMOTION_INSTRUCTIONS_FR
+        return SpeechTag(
+            segment_id=d.get("segment_id", ""),
+            speaker_type=speaker_type,
+            character_name=char_name,
+            emotion=emotion,
+            voice_id=voice_id,
+            emotion_instruction=instr_dict.get(emotion, instr_dict["neutral"]),
+        )
 
     def get_discovered_characters(self) -> List[str]:
         """Get sorted list of discovered character names."""
