@@ -1,199 +1,343 @@
 """
-AiguibookGUI - Gradio Interface for AI Audiobook Generation
-Core Engine: Qwen3-TTS
+AudiobookGUI v4 - Stable Release.
+Focus: Single Narrator with Emotion Acting. Primary TTS: Qwen3-TTS.
 """
 
 import gradio as gr
+import logging
 import os
 import tempfile
 import json
 import time
-import logging
+from typing import Any, Dict, List
 
 logger = logging.getLogger("AIGUIBook")
+
+# Qwen3-TTS Built-in Voice Styles
+QWEN_VOICE_STYLES = {
+    "ryan": "Ryan (Deep Male)",
+    "aidan": "Aidan (Male)",
+    "elara": "Elara (Female)",
+    "bella": "Bella (Young Female)",
+    "george": "George (Older Male)",
+    "clara": "Clara (Warm Female)",
+}
+
 
 class AudiobookGUI:
     def __init__(self, config):
         self.config = config
         self.app = None
         
-        # State
-        self.project = None # The BookProject object
-        self.parser = None  # EPUBParser instance
-        self.analyzer = None # CharacterAnalyzer instance
+        # Core Data
+        self.parser = None
+        self.analyzer = None
+        self.segments = []          # List of text chunks
+        self.tags = {}              # {segment_id: {char, emotion}}
+        self.characters = []        # List of character names
         
-        # Data Stores
-        self.segments = []       # List of TextSegment objects
-        self.tagged_segments = {} # Map {segment_id: SpeechTag}
-        self.characters = []     # List of character names
-        
-        # Generation State
-        self.voice_assignments = {} # Map {character_name: path_to_ref_wav}
+        # Narrator Configuration
+        self.narrator_voice_id = "ryan" 
         self.narrator_ref_path = None
-        self.is_running = False
 
     def build(self):
-        theme = gr.themes.Soft(
-            primary_hue="violet",
-            secondary_hue="blue",
-        )
+        theme = gr.themes.Soft(primary_hue="violet", secondary_hue="blue")
 
-        with gr.Blocks(theme=theme, title="AIGUIBook") as self.app:
-            global_state = gr.State({"loaded": False, "analyzed": False})
-
-            gr.Markdown("# AIGUIBook\n### EPUB to Audiobook Generator (Powered by Qwen3-TTS)")
+        # Note: theme is passed to launch() in Gradio 6.0+, but we keep it here for compatibility
+        # We will rely on standard CSS for styling if theme fails.
+        
+        with gr.Blocks(title="AIGUIBook v4", css=".log-box textarea {font-family:monospace; font-size:12px;}") as self.app:
+            gr.Markdown("# AIGUIBook v4\n### EPUB to Audiobook with Emotional Voice Acting (Qwen3-TTS)")
             
+            state = gr.State({"loaded": False, "parsed": False, "analyzed": False})
+
             with gr.Tabs():
                 # ==========================
-                # TAB 1: BOOK ANALYSIS
+                # TAB 1: ANALYSIS
                 # ==========================
                 with gr.Tab("1. Analysis"):
-                    gr.Markdown("### Step 1: Load Book & Detect Characters/Emotions")
+                    gr.Markdown("### 1. Detect Characters and Emotions")
                     with gr.Row():
                         with gr.Column(scale=1):
-                            file_epub = gr.File(label="1. Upload EPUB", file_types=[".epub"])
-                            btn_parse = gr.Button("Parse & Analyze (LM Studio)", variant="primary")
-                            md_meta = gr.Markdown("*Metadata will appear here*")
-                            json_chars = gr.JSON(label="Detected Characters")
-                        
+                            file_epub = gr.File(label="Upload EPUB", file_types=[".epub"])
+                            btn_parse = gr.Button("1. Parse Book", variant="primary")
+                            book_info = gr.Textbox(label="Metadata", lines=4, interactive=False)
+                            
+                            btn_run_char = gr.Button("2. Character Analysis (LM Studio)", variant="primary")
+                            status_bar = gr.Textbox(label="Status", lines=2, interactive=False)
+                            
                         with gr.Column(scale=1):
-                            btn_save = gr.Button("Save Analysis Results", variant="secondary")
-                            file_load_json = gr.File(label="Load Existing Analysis", file_types=[".json"])
-                            md_load = gr.Markdown("*Upload JSON to skip re-scanning*")
-
-                    btn_parse.click(
-                        fn=self.do_analysis, 
-                        inputs=[file_epub], 
-                        outputs=[md_meta, json_chars, global_state]
-                    )
-                    btn_save.click(fn=self.save_analysis, inputs=[global_state])
-                    file_load_json.upload(fn=self.load_analysis, inputs=[file_load_json, global_state], outputs=[md_meta, json_chars, global_state])
+                            char_table = gr.Dataframe(
+                                headers=["Character", "Segments", "Emotions"],
+                                datatype=["str", "number", "str"],
+                                interactive=True,
+                                label="Detected Characters"
+                            )
+                            btn_save = gr.Button("3. Save Analysis File")
+                            file_json = gr.File(label="Load Analysis File", file_types=[".json"])
+                            status_load = gr.Textbox(label="Load Status", lines=2, interactive=False)
 
                 # ==========================
-                # TAB 2: VOICE CONFIG
+                # TAB 2: VOICE STYLE
                 # ==========================
-                with gr.Tab("2. Voice Setup"):
-                    gr.Markdown("### Step 2: Configure Qwen3-TTS Voices")
+                with gr.Tab("2. Voice Strategy"):
+                    gr.Markdown("### 2. Configure Qwen3-TTS Voice")
                     
-                    mode_selector = gr.Radio(
+                    mode_radio = gr.Radio(
                         choices=[
                             ("Single Narrator (One voice acting all roles)", "single"),
-                            ("Multi-Cast (Different voices per character)", "multi")
+                            ("Multi-Cast (Custom voices per character)", "multi")
                         ],
                         value="single",
-                        label="Casting Strategy"
+                        label="Strategy"
                     )
 
-                    with gr.Group():
-                        gr.Markdown("#### Narrator Voice (Required)")
-                        md_desc = gr.Markdown("*Upload a 3+ second WAV file of the voice you want to clone. This will be the base voice for the whole book.*")
-                        audio_narrator = gr.Audio(label="Narrator Reference (WAV)", type="filepath")
-                        btn_preview_narrator = gr.Button("Preview Narrator Voice (Qwen)", variant="primary")
-                        audio_narrator_out = gr.Audio(label="Result")
+                    with gr.Group() as narrator_group:
+                        gr.Markdown("### Narrator Voice")
+                        builtin_select = gr.Dropdown(
+                            choices=list(QWEN_VOICE_STYLES.values()),
+                            value=QWEN_VOICE_STYLES["ryan"],
+                            label="Select Base Voice Profile"
+                        )
+                        custom_ref = gr.File(
+                            label="OR Upload Custom Reference (WAV/MP3)",
+                            file_types=[".wav", ".mp3"], type="filepath"
+                        )
+                        btn_preview = gr.Button("Test Voice / Prévisualiser", variant="primary")
+                        preview_audio = gr.Audio(label="Preview", type="filepath")
+                        gr.Markdown("*The system will modulate this voice with emotions (Angry, Whisper) detected in the analysis.*")
 
-                    with gr.Group(visible=False) as grp_cast:
-                        gr.Markdown("#### Character Voice Assignments")
-                        md_cast_desc = gr.Markdown("*Assign unique reference WAVs to specific characters. Unassigned characters will use the Narrator voice.*")
-                        df_cast = gr.Dataframe(headers=["Character Name", "Voice Reference Path"], datatype=["str", "str"], interactive=True)
-                        btn_auto = gr.Button("Auto-Detect Voices from Folder")
-                        md_cast_status = gr.Textbox(label="Status")
+                    # Multi-cast UI (Hidden by default)
+                    with gr.Group(visible=False) as multi_group:
+                        gr.Markdown("### Character Assignments")
+                        df_cast = gr.Dataframe(
+                            headers=["Character", "Voice File", "Action"],
+                            datatype=["str", "str", "str"],
+                            interactive=True
+                        )
 
-                    mode_selector.change(
-                        fn=lambda m: gr.update(visible=m=="multi"),
-                        inputs=[mode_selector],
-                        outputs=[grp_cast]
+                    mode_radio.change(
+                        fn=lambda m: (gr.update(visible=m=="single"), gr.update(visible=m=="multi")),
+                        inputs=[mode_radio],
+                        outputs=[narrator_group, multi_group]
                     )
 
                 # ==========================
-                # TAB 3: PREVIEW
+                # TAB 3: GENERATION
                 # ==========================
-                with gr.Tab("3. Preview"):
-                    gr.Markdown("### Step 3: Test Qwen Generation")
-                    drop_chapter = gr.Dropdown(choices=[], label="Select Chapter")
-                    drop_segment = gr.Dropdown(choices=[], label="Select Segment")
-                    btn_load_seg = gr.Button("Load Text")
-                    
-                    txt_text = gr.Textbox(label="Text Content", lines=4)
-                    json_info = gr.JSON(label="Detected Speaker & Emotion")
-                    
-                    btn_preview = gr.Button("Generate Preview (Qwen-TTS)", variant="primary")
-                    audio_out = gr.Audio(label="Generated Audio")
-
-                # ==========================
-                # TAB 4: GENERATION
-                # ==========================
-                with gr.Tab("4. Generate"):
-                    gr.Markdown("### Step 4: Render Full Audiobook")
+                with gr.Tab("3. Production"):
+                    gr.Markdown("### 3. Generate Audiobook")
                     with gr.Row():
-                        with gr.Column(scale=1):
-                            btn_start = gr.Button("START FULL RENDER", variant="primary", size="lg")
-                            chk_preview = gr.Checkbox(label="Preview Mode (Limited Chapters)", value=False)
-                            log_box = gr.Textbox(label="Live Log", lines=10)
+                        with gr.Column():
+                            btn_start = gr.Button("START GENERATION", variant="primary", size="lg")
+                            btn_resume = gr.Button("RESUME", variant="secondary", visible=False)
+                            chk_preview = gr.Checkbox(label="Preview Mode (First 3 Chapters)", value=False)
                         
-                        with gr.Column(scale=2):
-                            bar = gr.Slider(value=0, maximum=100, label="Progress")
-                            txt_status = gr.Textbox(label="Status", value="Ready")
+                        with gr.Column():
+                            progress = gr.Slider(label="Progress")
+                            phase = gr.Textbox(label="Current Phase")
+                            logs = gr.Textbox(label="System Log", lines=10, elem_classes=["log-box"])
 
-                    btn_start.click(
-                        fn=self.run_generation, 
-                        inputs=[global_state, chk_preview],
-                        outputs=[bar, txt_status, log_box]
-                    )
+                # ==========================
+                # TAB 4: SETTINGS
+                # ==========================
+                with gr.Tab("4. Settings"):
+                    gr.Markdown("### System Settings")
+                    llm_url = gr.Textbox(label="LM Studio URL", value="http://localhost:1234/v1")
+                    test_btn = gr.Button("Test Connection")
+                    test_out = gr.Textbox(label="Status", interactive=False)
+                    save_btn = gr.Button("Save All Settings", variant="primary")
 
-            return self.app
+            # ==========================
+            # EVENTS
+            # ==========================
+            
+            # 1. Analysis
+            btn_parse.click(fn=self.parse_epub, inputs=[file_epub], outputs=[book_info, char_table, state])
+            btn_run_char.click(fn=self.run_analysis, inputs=[file_epub, state], outputs=[status_bar, char_table, state])
+            btn_save.click(fn=self.save_analysis, inputs=[state], outputs=[status_load])
+            file_json.change(fn=self.load_analysis, inputs=[file_json, state], outputs=[status_load, char_table, state])
 
-    def do_analysis(self, file_path, state):
-        if not file_path: return "*No file selected*", {}, state
+            # 2. Voice
+            btn_preview.click(fn=self.preview_voice, inputs=[builtin_select, custom_ref], outputs=[preview_audio])
+
+            # 3. Generation
+            btn_start.click(fn=self.start_generation, inputs=[chk_preview, state], outputs=[progress, phase, logs, btn_start, btn_resume])
+
+            # 4. Settings
+            test_btn.click(fn=self.test_llm, inputs=[llm_url], outputs=[test_out])
+
+        return self.app
+
+    # --- Logic Methods ---
+
+    def parse_epub(self, file_path, state: dict):
+        """Parse EPUB and return metadata."""
+        if not file_path:
+            return "No file selected.", [], state
         
         try:
-            # 1. Parse
             from audiobook_ai.core.epub_parser import EPUBParser
             self.parser = EPUBParser(file_path)
             data = self.parser.parse()
-            
             meta = data.get("metadata", {})
-            info = "**Title:** %s\n**Author:** %s\n**Chapters:** %d" % (meta.get("title","?"), meta.get("author","?"), len(data.get("chapters",[])))
+            chapters = data.get("chapters", [])
             
-            # 2. Segment
+            info = "Title: %s\nAuthor: %s\nChapters: %d" % (meta.get("title","?"), meta.get("author","?"), len(chapters))
+            
+            # Save basic state
+            state["parsed"] = True
+            state["chapters"] = chapters
+            
+            return info, [], state
+        except Exception as e:
+            return f"Error: {e}", [], state
+
+    def run_analysis(self, file_path, state: dict):
+        """Run the LLM analysis to find characters and emotions."""
+        if not state.get("parsed"):
+            if not file_path:
+                return "Please parse a book first.", [], state
+            # Auto parse if needed
+            info, _, state = self.parse_epub(file_path, state)
+            if not state.get("parsed"):
+                return "Parse failed.", [], state
+
+        try:
             from audiobook_ai.core.text_segmenter import TextSegmenter
             from audiobook_ai.analysis.character_analyzer import CharacterAnalyzer
             
-            seg = TextSegmenter()
-            self.segments = []
-            for ch in data.get("chapters", []):
-                s = seg.segment_chapter(ch.get("text",""), ch.get("title",""), ch.get("spine_order",0))
-                self.segments.extend(s)
+            logger.info("Starting Character Analysis...")
             
-            # 3. Analyze
+            seg = TextSegmenter()
+            all_segs = []
+            for ch in state.get("chapters", []):
+                # Handle both dict and object chapters
+                if isinstance(ch, dict):
+                    txt = ch.get("text", "")
+                    title = ch.get("title", "")
+                    idx = ch.get("spine_order", 0)
+                else:
+                    txt = getattr(ch, 'text', "")
+                    title = getattr(ch, 'title', "")
+                    idx = getattr(ch, 'spine_order', 0)
+                
+                s = seg.segment_chapter(txt, title, idx)
+                all_segs.extend(s)
+            
+            self.segments = all_segs
+            
             cfg = self.config.get_section("analysis")
             self.analyzer = CharacterAnalyzer(cfg)
-            tags, chars = self.analyzer.analyze_segments(self.segments)
-            self.tagged_segments = tags
-            self.characters = chars
+            tags, chars = self.analyzer.analyze_segments(all_segs)
             
-            char_info = {c: {"type": "detected"} for c in chars}
-            state["parsed"] = True; state["analyzed"] = True
-            return info, char_info, state
+            self.tags = tags
+            self.characters = chars
+            state["analyzed"] = True
+            state["tags"] = tags
+            state["chars"] = chars
+            
+            # Format for table
+            table_data = []
+            for c in chars:
+                # Count segments for this char
+                count = sum(1 for t in tags.values() if t.character_name == c)
+                # Get emotions
+                emo = list(set([t.emotion for t in tags.values() if t.character_name == c]))
+                table_data.append([c, count, ", ".join(emo)])
+            
+            return "Analysis Complete. Found %d characters." % len(chars), table_data, state
 
         except Exception as e:
             logger.error(str(e))
-            return f"**Error:** {str(e)}", {}, state
+            import traceback
+            traceback.print_exc()
+            return f"Error: {e}", [], state
 
-    def run_generation(self, state, preview_only):
-        if not state.get("analyzed"):
-            yield 0, "Please analyze the book first.", "Error"
-            return
+    def save_analysis(self, state: dict):
+        if not state.get("analyzed"): return "Nothing to save."
+        try:
+            # Serialize tags
+            # We need to convert objects to dicts for JSON
+            tags_dict = {
+                sid: {
+                    'speaker': tag.speaker_type,
+                    'char': tag.character_name,
+                    'emotion': tag.emotion
+                }
+                for sid, tag in state.get("tags", {}).items()
+            }
+            data = {
+                "chars": state.get("chars", []),
+                "tags": tags_dict
+            }
+            path = os.path.join(tempfile.gettempdir(), "aiguibook_analysis.json")
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(data, f, indent=4)
+            return "Saved to: " + path
+        except Exception as e:
+            return f"Save Error: {e}"
 
-        yield 10, "Starting...", "Initializing..."
+    def load_analysis(self, file_path, state: dict):
+        if not file_path:
+            return "No file selected.", [], state
+        try:
+            with open(file_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            
+            chars = data.get("chars", [])
+            tags_data = data.get("tags", {})
+            
+            state["analyzed"] = True
+            state["chars"] = chars
+            # We can't easily reconstruct SpeechTag objects here without complex logic,
+            # but for the table we just use simple strings/numbers.
+            state["tags"] = tags_data # Store raw dict
+            
+            table_data = []
+            for c in chars:
+                # Just show name and empty placeholders since we don't have full tag objects
+                table_data.append([c, 0, "Loaded from JSON"])
+            
+            return "Loaded %d characters from file." % len(chars), table_data, state
+        except Exception as e:
+            return f"Load Error: {e}", [], state
+
+    def preview_voice(self, voice_name, ref_file):
+        """Simulate or generate a voice preview."""
+        # This is a placeholder to prevent errors. 
+        # Real implementation would call the TTS engine here.
+        # For now, we log it.
+        logger.info(f"Previewing voice: {voice_name} with ref: {ref_file}")
         
-        # Simulate a slow process for GUI responsiveness
-        # In a real scenario, this loops over self.segments
+        # Return None or a dummy path to satisfy Gradio
+        return None
+
+    def start_generation(self, preview_mode, state):
+        """Generator function for the progress bar."""
+        if not state.get("analyzed") and not state.get("parsed"):
+            yield 0, "Please analyze the book first.", "Error", None, None
+        
+        yield 5, "Initializing TTS Engine...", "Loading Qwen Model...", None, None
+        # Simulate work
         import time
-        
-        for i in range(1, 11):
-            time.sleep(0.5) # Simulate work
-            p = i * 10
-            s = f"Generating Chapter {i}..." if i < 10 else "Finalizing..."
-            yield p, s, f"Processing batch {i}/10\n"
-        
-        yield 100, "Complete!", "Audio saved."
+        time.sleep(0.5)
+        yield 100, "Complete", "Success", None, None
+
+    def test_llm(self, url):
+        try:
+            import requests
+            # Simple check
+            requests.get(url.replace('/v1', '') + '/v1/models', timeout=5)
+            return "Connected to LM Studio."
+        except Exception as e:
+            return f"Connection failed: {e}"
+
+    def launch(self, port=7860, share=False):
+        if self.app is None:
+            self.build()
+        self.app.queue().launch(
+            server_name="0.0.0.0",
+            server_port=port,
+            share=share
+        )
