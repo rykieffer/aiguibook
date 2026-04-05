@@ -518,78 +518,184 @@ class CharacterAnalyzer:
         return tags
 
     def _extract_json(self, text: str) -> Any:
-        """Extract JSON from text, handling markdown, JSONL, and conversational text."""
+        """Extract JSON from text using a robust multi-pass approach.
+        
+        Handles: clean arrays/objects, markdown code blocks, JSONL,
+        conversational wrappers, nested brackets in text fields.
+        """
         text = text.strip()
         if not text:
             return None
 
-        # Remove markdown code blocks
+        # Pass 1: Remove markdown code blocks
         md_match = re.findall(r'```(?:json)?\s*\n?(.*?)\n?\s*```', text, re.DOTALL)
         if md_match:
             text = md_match[0].strip()
+            # Try direct parse on cleaned markdown content
+            try:
+                return json.loads(text)
+            except json.JSONDecodeError:
+                pass
 
-        # Try direct parse
+        # Pass 2: Try direct parse (handles clean JSON)
         try:
-            return json.loads(text)
-        except json.JSONDecodeError:
-            pass
+            result = json.loads(text)
+            return result
+        except json.JSONDecodeError as direct_err:
+            logger.debug(f"Direct parse failed: {direct_err}")
 
-        # Try to find JSON array
-        start = text.find("[")
-        end = text.rfind("]")
-        if start != -1 and end != -1 and end > start:
-            try:
-                return json.loads(text[start:end + 1])
-            except json.JSONDecodeError:
-                pass
+        # Pass 3: Find a balanced JSON array using bracket-depth tracking
+        result = self._extract_balanced_json_array(text)
+        if result is not None:
+            return result
 
-        # Handle JSONL: one JSON object per line
-        lines = text.strip().split('\n')
-        jsonl_objects = []
-        for line in lines:
-            line = line.strip()
-            if line.startswith('{'):
-                depth = 0
-                for i, ch in enumerate(line):
-                    if ch == '{':
-                        depth += 1
-                    elif ch == '}':
-                        depth -= 1
-                        if depth == 0:
-                            try:
-                                obj = json.loads(line[:i + 1])
-                                jsonl_objects.append(obj)
-                            except json.JSONDecodeError:
-                                pass
-                            break
-            elif line.startswith('['):
-                try:
-                    obj = json.loads(line)
-                    jsonl_objects.append(obj)
-                except json.JSONDecodeError:
-                    pass
-
+        # Pass 4: Extract JSONL (one JSON object per line)
+        jsonl_objects = self._extract_jsonl(text)
         if jsonl_objects:
-            flattened = []
-            for obj in jsonl_objects:
-                if isinstance(obj, list):
-                    flattened.extend(obj)
-                else:
-                    flattened.append(obj)
-            return flattened if len(flattened) > 1 else (flattened[0] if flattened else None)
+            return jsonl_objects
 
-        # Try to find a single JSON object
-        start_obj = text.find("{")
-        end_obj = text.rfind("}")
-        if start_obj != -1 and end_obj != -1 and end_obj > start_obj:
+        # Pass 5: Try to extract a single balanced JSON object
+        result = self._extract_balanced_json_object(text)
+        if result is not None:
+            return result
+
+        # All passes failed - log for debugging
+        logger.error(
+            f"Could not extract JSON after all attempts. "
+            f"First 500 chars: {text[:500]}..."
+        )
+        return None
+
+    def _extract_balanced_json_array(self, text: str) -> Optional[list]:
+        """Extract a JSON array by tracking bracket depth.
+        
+        Handles cases where the array contains nested brackets in strings,
+        and where conversational text appears before/after the JSON.
+        """
+        # Find all opening brackets
+        for start in range(len(text)):
+            if text[start] != '[':
+                continue
+            
+            # Track bracket depth outside of strings
+            depth = 0
+            in_str = False
+            escape = False
+            
+            for i in range(start, len(text)):
+                ch = text[i]
+                
+                if escape:
+                    escape = False
+                    continue
+                    
+                if ch == '\\' and in_str:
+                    escape = True
+                    continue
+                    
+                if ch == '"' and not escape:
+                    in_str = not in_str
+                    continue
+                    
+                if in_str:
+                    continue
+                    
+                if ch == '[':
+                    depth += 1
+                elif ch == ']':
+                    depth -= 1
+                    if depth == 0:
+                        candidate = text[start:i + 1]
+                        try:
+                            result = json.loads(candidate)
+                            if isinstance(result, list):
+                                return result
+                        except json.JSONDecodeError:
+                            pass
+                        break
+        return None
+
+    def _extract_balanced_json_object(self, text: str) -> Optional[dict]:
+        """Extract a JSON object by tracking brace depth."""
+        for start in range(len(text)):
+            if text[start] != '{':
+                continue
+            
+            depth = 0
+            in_str = False
+            escape = False
+            
+            for i in range(start, len(text)):
+                ch = text[i]
+                
+                if escape:
+                    escape = False
+                    continue
+                    
+                if ch == '\\' and in_str:
+                    escape = True
+                    continue
+                    
+                if ch == '"' and not escape:
+                    in_str = not in_str
+                    continue
+                    
+                if in_str:
+                    continue
+                    
+                if ch == '{':
+                    depth += 1
+                elif ch == '}':
+                    depth -= 1
+                    if depth == 0:
+                        candidate = text[start:i + 1]
+                        try:
+                            result = json.loads(candidate)
+                            if isinstance(result, dict):
+                                return result
+                        except json.JSONDecodeError:
+                            pass
+                        break
+        return None
+
+    def _extract_jsonl(self, text: str) -> Optional[list]:
+        """Extract JSONL (one JSON object per line) from multi-line text."""
+        results = []
+        for line in text.split('\n'):
+            line = line.strip()
+            if not line or line.startswith(('#', '//')):
+                continue
+                
+            # Try the whole line
             try:
-                return json.loads(text[start_obj:end_obj + 1])
+                obj = json.loads(line)
+                results.append(obj)
+                continue
             except json.JSONDecodeError:
                 pass
 
-        # Log full response for debugging
-        logger.error(f"Could not find valid JSON. Full response:\n{text}")
-        return None
+            # Try to find an object in the line
+            obj = self._extract_balanced_json_object(line)
+            if obj is not None:
+                results.append(obj)
+                continue
+            
+            # Try to find an array in the line
+            arr = self._extract_balanced_json_array(line)
+            if arr is not None:
+                results.extend(arr)
+
+        # Flatten one level if we got nested lists
+        if results and any(isinstance(r, list) for r in results):
+            flat = []
+            for r in results:
+                if isinstance(r, list):
+                    flat.extend(r)
+                else:
+                    flat.append(r)
+            results = flat
+
+        return results if results else None
 
     def get_discovered_characters(self) -> List[str]:
         """Get sorted list of discovered character names."""
