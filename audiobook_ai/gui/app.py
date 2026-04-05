@@ -48,6 +48,7 @@ class AudiobookGUI:
 
         # State shared across tabs
         self._project = None
+        self._epub_parser = None
         self._tts_engine = None
         self._voice_manager = None
         self._analyzer = None
@@ -672,7 +673,7 @@ class AudiobookGUI:
             metadata = result["metadata"]
             chapters = result.get("chapters", [])
             self._chapters_list = chapters
-            self._epub_parser = parser
+            self._epub_parser = parser  # Store for later use
 
             self._chapter_titles = {}
             for ch in chapters:
