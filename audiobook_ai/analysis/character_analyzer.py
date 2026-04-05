@@ -1,8 +1,4 @@
-"""Character Analyzer - Uses LLM to detect characters, emotions, and assign voice IDs.
-
-Handles batched analysis with progress reporting via generator pattern.
-Supports LM Studio, OpenRouter API, and Ollama backends.
-"""
+"""Character Analyzer - Uses LLM to detect characters, emotions, and assign voice IDs."""
 
 from __future__ import annotations
 
@@ -12,7 +8,7 @@ import os
 import re
 import time
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, Generator, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -120,18 +116,144 @@ class SpeechTag:
         }
 
 
+def get_llm_models_from_backend(
+    backend: str,
+    base_url: Optional[str] = None,
+    api_key: Optional[str] = None,
+    timeout: float = 10.0,
+) -> Tuple[bool, List[str], str]:
+    """Auto-detect available models from an LLM backend.
+
+    Args:
+        backend: One of "lmstudio", "ollama", "openrouter"
+        base_url: Base URL for local backends (LM Studio, Ollama)
+        api_key: API key for remote backends
+        timeout: Request timeout in seconds
+
+    Returns:
+        Tuple of (success, model_list, error_message)
+    """
+    try:
+        import urllib.request
+        import urllib.error
+    except ImportError:
+        return False, [], "urllib not available"
+
+    if backend == "lmstudio":
+        url = (base_url or "http://localhost:1234/v1") + "/models"
+        try:
+            req = urllib.request.Request(url)
+            req.add_header("Content-Type", "application/json")
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                data = json.loads(resp.read().decode())
+            model_ids = [m.get("id", "") for m in data.get("data", []) if m.get("id")]
+            if model_ids:
+                return True, model_ids, ""
+            return False, [], "No models returned"
+        except (urllib.error.URLError, urllib.error.HTTPError, json.JSONDecodeError,
+                Exception) as e:
+            return False, [], str(e)
+
+    elif backend == "ollama":
+        url = (base_url or "http://localhost:11434") + "/api/tags"
+        try:
+            req = urllib.request.Request(url)
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                data = json.loads(resp.read().decode())
+            model_ids = [m.get("name", "") for m in data.get("models", []) if m.get("name")]
+            # Ollama models aren't OpenAI API models by default, but we can still list them
+            if model_ids:
+                return True, model_ids, ""
+            return False, [], "No models returned"
+        except (urllib.error.URLError, urllib.error.HTTPError, json.JSONDecodeError,
+                Exception) as e:
+            return False, [], str(e)
+
+    elif backend == "openrouter":
+        key = api_key or ""
+        if not key:
+            return False, [], "OpenRouter API key not provided"
+        url = "https://openrouter.ai/api/v1/models"
+        try:
+            req = urllib.request.Request(url)
+            req.add_header("Authorization", f"Bearer {key}")
+            req.add_header("Content-Type", "application/json")
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                data = json.loads(resp.read().decode())
+            model_ids = [m.get("id", "") for m in data.get("data", []) if m.get("id")]
+            if model_ids:
+                return True, model_ids, ""
+            return False, [], "No models returned"
+        except (urllib.error.URLError, urllib.error.HTTPError, json.JSONDecodeError,
+                Exception) as e:
+            return False, [], str(e)
+
+    return False, [], f"Unknown backend: {backend}"
+
+
+def test_llm_connection(
+    backend: str,
+    base_url: Optional[str] = None,
+    model: Optional[str] = None,
+    api_key: Optional[str] = None,
+    timeout: float = 30.0,
+) -> Tuple[bool, str]:
+    """Test if an LLM backend is reachable and can process a simple request.
+
+    Args:
+        backend: One of "lmstudio", "ollama", "openrouter"
+        base_url: Base URL for local backends
+        model: Model ID to test with
+        api_key: API key for remote backends
+        timeout: Request timeout in seconds
+
+    Returns:
+        Tuple of (success, message)
+    """
+    try:
+        from openai import OpenAI
+    except ImportError:
+        return False, "openai package not installed"
+
+    if backend == "lmstudio":
+        base = base_url or "http://localhost:1234/v1"
+        client = OpenAI(base_url=base, api_key="unused")
+        test_model = model or ""
+    elif backend == "ollama":
+        base = base_url or "http://localhost:11434/v1"
+        client = OpenAI(base_url=base, api_key="ollama")
+        test_model = model or "qwen3:32b"
+    elif backend == "openrouter":
+        client = OpenAI(base_url="https://openrouter.ai/api/v1", api_key=api_key or "")
+        test_model = model or "openai/gpt-4o-mini"
+    else:
+        return False, f"Unknown backend: {backend}"
+
+    try:
+        response = client.chat.completions.create(
+            model=test_model,
+            messages=[{"role": "user", "content": "Say OK"}],
+            max_tokens=10,
+            timeout=timeout,
+        )
+        content = response.choices[0].message.content.strip()
+        return True, f"Connected. Model replied: \"{content}\""
+    except Exception as e:
+        return False, f"Connection failed: {e}"
+
+
 class CharacterAnalyzer:
     """Analyzes text segments to detect characters, emotions, and suggest voices.
 
-    Uses an OpenAI-compatible API (LM Studio, OpenRouter, or Ollama).
-    Provides both synchronous and generator-based analysis methods.
+    Supports LM Studio, OpenRouter API, and Ollama backends.
+    Auto-detects the model from LM Studio/Ollama when configured.
     """
 
     def __init__(self, config: dict, session=None):
         """
         Args:
             config: Configuration dict for the analysis section
-            session: Optional OpenAI-compatible session
+            session: Optional pre-created OpenAI client
         """
         self.config = config
         self._backend = config.get("llm_backend", "lmstudio")
@@ -140,66 +262,138 @@ class CharacterAnalyzer:
 
         self._cache: Dict[str, Dict] = {}
         self._characters: Dict[str, set] = {}
-
+        self._model: str = ""
         self._session = session
-        if self._session is None:
-            self._session = self._create_client()
 
-    def _create_client(self):
-        """Create an OpenAI-compatible client for the configured backend."""
+        if self._session is None:
+            self._session, self._model = self._create_client()
+
+    def _create_client(self) -> Tuple[Any, str]:
+        """Create an OpenAI-compatible client for the configured backend.
+
+        For LM Studio: auto-detect models if not set.
+        For Ollama: use configured model name.
+        For OpenRouter: use configured model name + API key.
+
+        Returns:
+            Tuple of (OpenAI client, model_name)
+        """
         try:
             from openai import OpenAI
         except ImportError:
             raise ImportError("openai package required for CharacterAnalyzer")
 
-        if self._backend == "openrouter":
+        if self._backend == "lmstudio":
+            base_url = self.config.get("lmstudio_base_url", "http://localhost:1234/v1")
+            # Ensure base_url ends with /v1 for OpenAI compatibility
+            if not base_url.rstrip("/").endswith("/v1"):
+                base_url = base_url.rstrip("/") + "/v1"
+
+            model = self.config.get("lmstudio_model", "")
+
+            # Auto-detect model if not configured or empty
+            if not model:
+                logger.info("No LM Studio model configured, auto-detecting...")
+                ok, models, err = get_llm_models_from_backend(
+                    "lmstudio", base_url=base_url
+                )
+                if ok and models:
+                    model = models[0]
+                    logger.info(f"Auto-detected LM Studio model: {model}")
+                    # Save it back to config for next time
+                    self.config["lmstudio_model"] = model
+                else:
+                    logger.warning(
+                        f"Could not auto-detect LM Studio models: {err}. "
+                        "Make sure LM Studio has a model loaded and is running."
+                    )
+
+            if not model:
+                raise ValueError(
+                    "No LM Studio model found. Load a model in LM Studio first, "
+                    "or set lmstudio_model in config."
+                )
+
+            client = OpenAI(base_url=base_url, api_key="unused")
+            logger.info(f"CharacterAnalyzer -> LM Studio: {base_url} / {model}")
+            return client, model
+
+        elif self._backend == "openrouter":
             api_key = self.config.get("openrouter_api_key", "")
-            model = self.config.get("openrouter_model", "qwen/qwen3.6-plus:free")
+            model = self.config.get("openrouter_model", "openai/gpt-4o-mini")
             if not api_key:
                 raise ValueError("OpenRouter API key not set.")
             client = OpenAI(
                 base_url="https://openrouter.ai/api/v1",
                 api_key=api_key,
             )
-            self._model = model
+            logger.info(f"CharacterAnalyzer -> OpenRouter: {model}")
+            return client, model
 
         elif self._backend == "ollama":
             base_url = self.config.get("ollama_base_url", "http://localhost:11434")
             model = self.config.get("ollama_model", "qwen3:32b")
             client = OpenAI(
-                base_url=f"{base_url}/v1",
+                base_url=f"{base_url.rstrip('/')}/v1",
                 api_key="ollama",
             )
-            self._model = model
-
-        elif self._backend == "lmstudio":
-            base_url = self.config.get("lmstudio_base_url", "http://localhost:1234")
-            model = self.config.get("lmstudio_model", "")
-            client = OpenAI(
-                base_url=f"{base_url}/v1",
-                api_key="lm-studio",
-            )
-            self._model = model if model else ""
+            logger.info(f"CharacterAnalyzer -> Ollama: {model}")
+            return client, model
 
         else:
             raise ValueError(f"Unknown LLM backend: {self._backend}")
 
-        logger.info(f"CharacterAnalyzer initialized with {self._backend}/{self._model}")
-        return client
+    @staticmethod
+    def discover_models(
+        backend: str,
+        base_url: Optional[str] = None,
+        api_key: Optional[str] = None,
+    ) -> Tuple[bool, List[str], str]:
+        """Static helper: discover available models from a backend.
 
-    def analyze_segments(self, segments_list, language="french"):
-        """Blocking version: analyzes all segments and returns final result."""
+        Delegates to the module-level function.
+        """
+        return get_llm_models_from_backend(
+            backend=backend,
+            base_url=base_url,
+            api_key=api_key,
+        )
+
+    def analyze_segments(
+        self,
+        segments_list: list,
+        language: str = "french",
+    ) -> Tuple[Dict[str, SpeechTag], List[str]]:
+        """Blocking version: analyzes all segments and returns final result.
+
+        Args:
+            segments_list: List of TextSegment objects or dicts
+            language: Language of the text
+
+        Returns:
+            Tuple of ({segment_id: SpeechTag}, [character_names])
+        """
         result = None
         for item in self.analyze_segments_iter(segments_list, language):
             if item.get("status") == "finished":
                 result = item["result"]
-        return result
+        return result or ({}, [])
 
-    def analyze_segments_iter(self, segments_list, language="french"):
-        """Generator version: yields progress updates during analysis."""
-        all_tags = {}
-        all_chars = []
-        batch = []
+    def analyze_segments_iter(
+        self,
+        segments_list: list,
+        language: str = "french",
+    ) -> Generator[Dict[str, Any], None, None]:
+        """Generator version: yields progress updates during analysis.
+
+        Yields dicts with keys:
+        - status: "init", "batch_start", "batch_done", "finished"
+        - msg: Human-readable status text
+        - result: (tags_dict, char_list) when status is "finished"
+        """
+        all_tags: Dict[str, SpeechTag] = {}
+        all_chars: List[str] = []
+        batch: List[dict] = []
         total = len(segments_list)
         batch_num = 0
 
@@ -222,17 +416,17 @@ class CharacterAnalyzer:
                 for char_name in chars:
                     if char_name not in self._characters:
                         self._characters[char_name] = set()
-                for tag in tags.values():
+                for tag in all_tags.values():
                     if tag.character_name:
                         self._characters[tag.character_name].add(tag.segment_id)
 
-                batch = []
+                batch.clear()
                 yield {
                     "status": "batch_done",
                     "msg": f"Batch {batch_num} complete. Found {len(all_chars)} characters so far.",
                 }
 
-        # Process remaining
+        # Process remaining segments
         if batch:
             batch_num += 1
             yield {"status": "batch_start", "msg": f"Analyzing Final Batch {batch_num}..."}
@@ -242,7 +436,7 @@ class CharacterAnalyzer:
             for char_name in chars:
                 if char_name not in self._characters:
                     self._characters[char_name] = set()
-            for tag in tags.values():
+            for tag in all_tags.values():
                 if tag.character_name:
                     self._characters[tag.character_name].add(tag.segment_id)
             yield {
@@ -252,9 +446,17 @@ class CharacterAnalyzer:
 
         unique_chars = list(dict.fromkeys(all_chars))
         logger.info(f"Analysis done: {len(all_tags)} segments, {len(unique_chars)} characters")
-        yield {"status": "finished", "msg": "Analysis complete!", "result": (all_tags, unique_chars)}
+        yield {
+            "status": "finished",
+            "msg": "Analysis complete!",
+            "result": (all_tags, unique_chars),
+        }
 
-    def _analyze_batch(self, batch, language):
+    def _analyze_batch(
+        self,
+        batch: List[dict],
+        language: str,
+    ) -> Tuple[Dict[str, SpeechTag], List[str]]:
         """Analyze a single batch of segments via LLM."""
         if not batch:
             return {}, []
@@ -277,38 +479,46 @@ class CharacterAnalyzer:
                     messages=[
                         {
                             "role": "system",
-                            "content": "You are an expert literary analyst. Respond ONLY with a valid JSON array. No text, no explanation, no markdown."
+                            "content": (
+                                "You are an expert literary analyst. "
+                                "Respond ONLY with a valid JSON array. "
+                                "No text, no explanation, no markdown."
+                            ),
                         },
-                        {
-                            "role": "user",
-                            "content": prompt,
-                        },
+                        {"role": "user", "content": prompt},
                     ],
                     temperature=0.1,
-                    max_tokens=2000,
-                    timeout=300.0,
+                    max_tokens=4000,
+                    timeout=300000
                 )
 
                 content = response.choices[0].message.content.strip()
                 parsed = self._extract_json(content)
 
                 if parsed is None:
-                    logger.warning(f"LLM returned non-JSON response (attempt {attempt + 1})")
+                    logger.warning(
+                        f"LLM returned non-JSON response (attempt {attempt + 1})"
+                    )
                     continue
 
-                if isinstance(parsed, dict) and "analysis" in parsed:
-                    parsed = parsed["analysis"]
-                if isinstance(parsed, dict) and "result" in parsed:
-                    parsed = parsed["result"]
+                # Unwrap nested dicts (some models wrap the array)
+                if isinstance(parsed, dict):
+                    for key in ("analysis", "result", "data", "tags"):
+                        if key in parsed and isinstance(parsed[key], list):
+                            parsed = parsed[key]
+                            break
 
                 if not isinstance(parsed, list):
-                    logger.warning(f"Expected JSON array, got {type(parsed).__name__} (attempt {attempt + 1})")
+                    logger.warning(
+                        f"Expected JSON array, got {type(parsed).__name__} "
+                        f"(attempt {attempt + 1})"
+                    )
                     if attempt < self._max_retries - 1:
                         continue
                     return {}, []
 
-                tags_dict = {}
-                characters = []
+                tags_dict: Dict[str, SpeechTag] = {}
+                characters: List[str] = []
                 for item in parsed:
                     if not isinstance(item, dict):
                         continue
@@ -316,8 +526,11 @@ class CharacterAnalyzer:
                     if not seg_id:
                         continue
                     char_name = item.get("character_name")
-                    if char_name:
+                    if char_name and isinstance(char_name, str):
                         characters.append(char_name)
+                    elif char_name is not None:
+                        char_name = None
+
                     tag = SpeechTag(
                         segment_id=seg_id,
                         speaker_type=item.get("speaker_type", "narrator"),
@@ -341,7 +554,9 @@ class CharacterAnalyzer:
                     return tags_dict, characters
 
             except Exception as e:
-                logger.warning(f"LLM analysis error (attempt {attempt + 1}/{self._max_retries}): {e}")
+                logger.warning(
+                    f"LLM analysis error (attempt {attempt + 1}/{self._max_retries}): {e}"
+                )
 
             if attempt < self._max_retries - 1:
                 wait_time = 1.5 * (2 ** attempt)
@@ -349,8 +564,10 @@ class CharacterAnalyzer:
                 time.sleep(wait_time)
 
         # Fallback: create narrator-only tags
-        logger.warning(f"Analysis failed after {self._max_retries} attempts, using fallback.")
-        fallback_tags = {}
+        logger.warning(
+            f"Analysis failed after {self._max_retries} attempts, using fallback."
+        )
+        fallback_tags: Dict[str, SpeechTag] = {}
         for seg in batch:
             tid = seg.get("segment_id", "")
             fallback_tags[tid] = SpeechTag(
@@ -365,50 +582,12 @@ class CharacterAnalyzer:
             )
         return fallback_tags, []
 
-    def _get_emotion_instruction(self, emotion, language):
-        """Get emotion-specific TTS instruction text."""
-        lang = "french"
-        instructions = EMOTION_INSTRUCTIONS_FR
-        if "english" in language.lower() or "en" in language.lower():
-            instructions = EMOTION_INSTRUCTIONS_EN
-        elif "french" in language.lower() or "fr" in language.lower():
-            instructions = EMOTION_INSTRUCTIONS_FR
-        return instructions.get(emotion, instructions.get("neutral", ""))
-
-    def _parse_analysis_response(self, analysis, batch):
-        """Parse the LLM JSON array response into speech tags."""
-        if not isinstance(analysis, list):
-            return {}, []
-        tags = {}
-        characters = []
-        for item in analysis:
-            if not isinstance(item, dict):
-                continue
-            seg_id = item.get("segment_id", "")
-            if not seg_id:
-                continue
-            char_name = item.get("character_name")
-            if char_name:
-                characters.append(char_name)
-            tag = SpeechTag(
-                segment_id=seg_id,
-                speaker_type=item.get("speaker_type", "narrator"),
-                character_name=char_name,
-                emotion=item.get("emotion", "neutral"),
-                voice_id=item.get("voice_id", "narrator_male"),
-                emotion_instruction=item.get("emotion_instruction", ""),
-                character_description=item.get("character_description", ""),
-                suggested_voice_id=item.get("suggested_voice_id", "narrator_male"),
-            )
-            tags[seg_id] = tag
-        return tags, characters
-
-    def _dict_to_tags(self, cached):
+    def _dict_to_tags(self, cached: dict) -> Dict[str, SpeechTag]:
         """Convert cached dict back to SpeechTag dict."""
         analysis = cached.get("analysis", [])
         if not isinstance(analysis, list):
             return {}
-        tags = {}
+        tags: Dict[str, SpeechTag] = {}
         for item in analysis:
             if not isinstance(item, dict):
                 continue
@@ -429,7 +608,7 @@ class CharacterAnalyzer:
         return tags
 
     @staticmethod
-    def _extract_json(text):
+    def _extract_json(text: str) -> Any:
         """Extract JSON from text, handling markdown and conversational text."""
         text = text.strip()
         if not text:
@@ -467,10 +646,10 @@ class CharacterAnalyzer:
         logger.warning(f"Could not find valid JSON. Preview: {text[:200]}")
         return None
 
-    def get_discovered_characters(self):
+    def get_discovered_characters(self) -> List[str]:
         """Get sorted list of discovered character names."""
         return sorted(self._characters.keys())
 
-    def get_character_segments(self, character_name):
+    def get_character_segments(self, character_name: str) -> List[str]:
         """Get segment IDs for a specific character."""
         return sorted(self._characters.get(character_name, set()))

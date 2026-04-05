@@ -482,16 +482,42 @@ class AudiobookGUI:
                                 value="lmstudio",
                                 label="LLM Backend / Moteur LLM",
                             )
-                            with gr.Row():
+                            # LM Studio section (default visible)
+                            with gr.Row(equal_height=True):
                                 lmstudio_url_field = gr.Textbox(
                                     label="LM Studio URL",
-                                    value="http://localhost:1234",
-                                    placeholder="http://localhost:1234",
+                                    value="http://localhost:1234/v1",
+                                    placeholder="http://localhost:1234/v1",
+                                    scale=2,
                                 )
-                                lmstudio_model_field = gr.Textbox(
-                                    label="LM Studio Model",
-                                    value="gemma-4-26b-a4b",
-                                    placeholder="gemma-4-26b-a4b",
+                                refresh_models_btn = gr.Button(
+                                    "Refresh Models / Rafraichir",
+                                    variant="secondary",
+                                    size="sm",
+                                    scale=1,
+                                )
+                            llm_model_dropdown = gr.Dropdown(
+                                choices=[],
+                                value=None,
+                                label="Model (auto-detected) / Modèle (auto-detecté)",
+                                info="Click 'Refresh Models' to detect available models from LM Studio / Ollama",
+                                allow_custom_value=True,
+                            )
+
+                            # Connection test row
+                            with gr.Row(equal_height=True):
+                                test_llm_btn = gr.Button(
+                                    "Test Connection / Tester Connexion",
+                                    variant="primary",
+                                    size="sm",
+                                    scale=1,
+                                )
+                                llm_test_status = gr.Textbox(
+                                    label="Connection Status / État",
+                                    value="",
+                                    interactive=False,
+                                    lines=2,
+                                    scale=4,
                                 )
 
                             with gr.Accordion("OpenRouter API (optional)", open=False):
@@ -502,17 +528,17 @@ class AudiobookGUI:
                                 )
                                 openrouter_model = gr.Textbox(
                                     label="OpenRouter Model / Modèle",
-                                    value="qwen/qwen3.6-plus:free",
+                                    value="openai/gpt-4o-mini",
                                 )
 
                             with gr.Accordion("Ollama (optional)", open=False):
+                                ollama_base = gr.Textbox(
+                                    label="Ollama Base URL",
+                                    value="http://localhost:11434",
+                                )
                                 ollama_model = gr.Textbox(
                                     label="Ollama Model / Modèle",
                                     value="qwen3:32b",
-                                )
-                                ollama_url_field = gr.Textbox(
-                                    label="Ollama Base URL",
-                                    value="http://localhost:11434",
                                 )
 
                     save_config_btn = gr.Button(
@@ -527,9 +553,9 @@ class AudiobookGUI:
                         inputs=[tts_batch_size, tts_dtype_select, tts_device_select,
                                 validation_enabled, max_wer, max_retries,
                                 output_bitrate, output_crossfade, normalize_audio,
-                                llm_backend, lmstudio_url_field, lmstudio_model_field,
+                                llm_backend, lmstudio_url_field, llm_model_dropdown,
                                 openrouter_key, openrouter_model,
-                                ollama_model, ollama_url_field],
+                                ollama_model, ollama_base],
                         outputs=[config_status],
                     )
 
@@ -540,7 +566,21 @@ class AudiobookGUI:
                                  validation_enabled, max_wer, max_retries,
                                  output_bitrate, output_crossfade, normalize_audio,
                                  llm_backend, openrouter_key, openrouter_model,
-                                 ollama_model, ollama_url_field, config_status],
+                                 ollama_model, ollama_base, config_status,
+                                 llm_model_dropdown],
+                    )
+
+                    refresh_models_btn.click(
+                        fn=self._on_refresh_models,
+                        inputs=[llm_backend, lmstudio_url_field, openrouter_key, ollama_base],
+                        outputs=[llm_model_dropdown, llm_test_status],
+                    )
+
+                    test_llm_btn.click(
+                        fn=self._on_test_llm_connection,
+                        inputs=[llm_backend, llm_model_dropdown, lmstudio_url_field,
+                                openrouter_key, openrouter_model, ollama_model, ollama_base],
+                        outputs=[llm_test_status],
                     )
 
             return self.app
@@ -1257,6 +1297,112 @@ class AudiobookGUI:
 
     # ==================== Settings Tab Handlers ====================
 
+    def _on_refresh_models(
+        self, backend, lmstudio_url, openrouter_api_key, ollama_base,
+    ):
+        """Hit the LLM backend to discover available models."""
+        from audiobook_ai.analysis.character_analyzer import get_llm_models_from_backend
+
+        if backend == "lmstudio":
+            ok, models, err = get_llm_models_from_backend(
+                "lmstudio", base_url=lmstudio_url or "http://localhost:1234/v1",
+            )
+            if ok and models:
+                return (
+                    gr.update(choices=models, value=models[0]),
+                    f"Found {len(models)} model(s): {', '.join(models)}",
+                )
+            return gr.update(choices=[], value=None), f"Failed: {err}"
+
+        elif backend == "ollama":
+            ok, models, err = get_llm_models_from_backend(
+                "ollama", base_url=ollama_base or "http://localhost:11434",
+            )
+            if ok and models:
+                return (
+                    gr.update(choices=models, value=models[0]),
+                    f"Found {len(models)} Ollama model(s): {', '.join(models)}",
+                )
+            return gr.update(choices=[], value=None), f"Failed: {err}"
+
+        elif backend == "openrouter":
+            if not openrouter_api_key and not self.config.get("analysis", "openrouter_api_key"):
+                return gr.update(choices=[], value=None), "No OpenRouter API key set"
+            key = openrouter_api_key or self.config.get("analysis", "openrouter_api_key", "")
+            ok, models, err = get_llm_models_from_backend(
+                "openrouter", api_key=key,
+            )
+            if ok and models:
+                top = models[:30]  # limit dropdown
+                return (
+                    gr.update(choices=top, value=top[0] if top else None),
+                    f"Found {len(models)} model(s). Showing top {len(top)}.",
+                )
+            return gr.update(choices=[], value=None), f"Failed: {err}"
+
+        return gr.update(choices=[], value=None), f"Unknown backend: {backend}"
+
+    def _on_test_llm_connection(
+        self, backend, selected_model, lmstudio_url,
+        openrouter_api_key, openrouter_model,
+        ollama_model_val, ollama_base,
+    ):
+        """Send a tiny test message to verify the LLM backend works."""
+        from audiobook_ai.analysis.character_analyzer import test_llm_connection
+
+        if backend == "lmstudio":
+            model = selected_model or self.config.get("analysis", "lmstudio_model", "")
+            if not model and lmstudio_url:
+                # Try auto-detect first
+                ok, models, _ = get_llm_models_from_backend(
+                    "lmstudio", base_url=lmstudio_url,
+                )
+                if ok and models:
+                    model = models[0]
+
+            if not model:
+                return "No model selected. Click 'Refresh Models' first or type a model name."
+
+            base = lmstudio_url or "http://localhost:1234/v1"
+            if not base.rstrip("/").endswith("/v1"):
+                base = base.rstrip("/") + "/v1"
+
+            ok, msg = test_llm_connection(
+                "lmstudio", base_url=base, model=model, timeout=60.0,
+            )
+            if ok:
+                # Save the working model
+                self.config.set("analysis", "lmstudio_model", model)
+                self.config.set("analysis", "lmstudio_base_url", lmstudio_url)
+                return f"SUCCESS (LM Studio): {msg}"
+            return f"FAILED (LM Studio): {msg}"
+
+        elif backend == "ollama":
+            model = selected_model or ollama_model_val or "qwen3:32b"
+            base = ollama_base or "http://localhost:11434"
+            ok, msg = test_llm_connection(
+                "ollama", base_url=base, model=model, timeout=60.0,
+            )
+            if ok:
+                self.config.set("analysis", "ollama_model", model)
+                return f"SUCCESS (Ollama): {msg}"
+            return f"FAILED (Ollama): {msg}"
+
+        elif backend == "openrouter":
+            model = selected_model or openrouter_model or "openai/gpt-4o-mini"
+            key = openrouter_api_key or self.config.get("analysis", "openrouter_api_key", "")
+            if not key:
+                return "No OpenRouter API key. Set it in the field above or env OPENROUTER_API_KEY."
+            ok, msg = test_llm_connection(
+                "openrouter", model=model, api_key=key, timeout=60.0,
+            )
+            if ok:
+                self.config.set("analysis", "openrouter_model", model)
+                return f"SUCCESS (OpenRouter): {msg}"
+            return f"FAILED (OpenRouter): {msg}"
+
+        return f"Unknown backend: {backend}"
+
     def _on_save_settings(
         self, batch_size, dtype, device,
         val_enabled, max_wer, max_retries,
@@ -1282,7 +1428,7 @@ class AudiobookGUI:
 
             self.config.set("analysis", "llm_backend", llm_back)
             self.config.set("analysis", "lmstudio_base_url", lmstudio_url_val)
-            self.config.set("analysis", "lmstudio_model", lmstudio_model_val)
+            self.config.set("analysis", "lmstudio_model", lmstudio_model_val or "")
             if api_key:
                 self.config.set("analysis", "openrouter_api_key", api_key)
             self.config.set("analysis", "openrouter_model", llm_model)
@@ -1290,7 +1436,7 @@ class AudiobookGUI:
             self.config.set("analysis", "ollama_base_url", ollama_url_val)
 
             self.config.save()
-            return "Configuration saved / Configuration sauvegardée"
+            return "Configuration saved / Configuration sauvegardee"
         except Exception as e:
             return f"Error saving: {e}"
 
@@ -1310,30 +1456,56 @@ class AudiobookGUI:
             normalize = self.config.get("output", "normalize_audio", True)
 
             llm_backend_val = self.config.get("analysis", "llm_backend", "lmstudio")
-            lmstudio_url_v = self.config.get("analysis", "lmstudio_base_url", "http://localhost:1234")
-            lmstudio_model_v = self.config.get("analysis", "lmstudio_model", "gemma-4-26b-a4b")
+            lmstudio_url_v = self.config.get("analysis", "lmstudio_base_url", "http://localhost:1234/v1")
+            lmstudio_model_v = self.config.get("analysis", "lmstudio_model", "")
             api_key_val = self.config.get("analysis", "openrouter_api_key", "")
-            llm_model_val = self.config.get("analysis", "openrouter_model", "qwen/qwen3.6-plus:free")
+            llm_model_val = self.config.get("analysis", "openrouter_model", "openai/gpt-4o-mini")
             ollama_model_val = self.config.get("analysis", "ollama_model", "qwen3:32b")
             ollama_url_val = self.config.get("analysis", "ollama_base_url", "http://localhost:11434")
+
+            # Auto-detect models from the configured backend on load
+            model_choices = []
+            model_value = None
+            if llm_backend_val == "lmstudio":
+                ok, models, _ = get_llm_models_from_backend(
+                    "lmstudio", base_url=lmstudio_url_v,
+                )
+                if ok and models:
+                    model_choices = models
+                    model_value = lmstudio_model_v or models[0]
+                    self.config.set("analysis", "lmstudio_model", model_value)
+            elif llm_backend_val == "ollama":
+                ok, models, _ = get_llm_models_from_backend(
+                    "ollama", base_url=ollama_url_val,
+                )
+                if ok and models:
+                    model_choices = models
+                    model_value = ollama_model_val or models[0]
+
+            dropdown_update = gr.update(
+                choices=model_choices,
+                value=model_value,
+            )
 
             return (
                 batch, dtype, device,
                 val_enabled, max_wer, max_retries_val,
                 bitrate, crossfade, normalize,
                 llm_backend_val,
-                lmstudio_url_v, lmstudio_model_v,
                 api_key_val, llm_model_val,
                 ollama_model_val, ollama_url_val,
-                "Configuration loaded / Configuration chargée",
+                "Configuration loaded / Configuration chargee. Models auto-detected.",
+                dropdown_update,
             )
         except Exception as e:
-            return (4, "bfloat16", "cuda", True, 15, 2,
-                    "128k", 0.5, True, "lmstudio",
-                    "http://localhost:1234", "gemma-4-26b-a4b",
-                    "", "qwen/qwen3.6-plus:free",
-                    "qwen3:32b", "http://localhost:11434",
-                    f"Error: {e}")
+            return (
+                4, "bfloat16", "cuda", True, 15, 2,
+                "128k", 0.5, True, "lmstudio",
+                "", "openai/gpt-4o-mini",
+                "qwen3:32b", "http://localhost:11434",
+                f"Error: {e}",
+                gr.update(choices=[], value=None),
+            )
 
     def launch(self, port=7860, share=False, server_name="0.0.0.0", **kwargs):
         """Launch the Gradio application.
