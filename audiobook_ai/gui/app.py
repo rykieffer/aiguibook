@@ -673,6 +673,7 @@ class AudiobookGUI:
             metadata = result["metadata"]
             chapters = result.get("chapters", [])
             self._chapters_list = chapters
+            self._epub_parser = parser
             self._epub_parser = parser  # Store for later use
 
             self._chapter_titles = {}
@@ -795,10 +796,11 @@ class AudiobookGUI:
     def _on_run_analysis(self, state):
         """Generator-based analysis to provide live progress updates."""
         self._ensure_voices_initialized()
-        if not self._epub_parser or not getattr(self._epub_parser, '_chapters', None):
+        parser = getattr(self, '_epub_parser', None)
+        if not parser or not getattr(parser, '_chapters', None):
             yield "No book loaded. Parse an EPUB first.", [], state
             return
-        chapters = self._epub_parser._chapters
+        chapters = parser._chapters
         if not chapters:
             yield "No chapters found.", [], state
             return
