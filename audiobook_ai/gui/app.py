@@ -672,11 +672,11 @@ class AudiobookGUI:
                 {"loaded": False, "parsed": False, "analyzed": False, "voices_assigned": False},
             )
 
-    def _on_run_analysis(self, state):
+    def _on_run_analysis(self, state, analysis_status_box, char_list_box):
         """Generator-based analysis to provide live progress updates."""
         self._ensure_voices_initialized()
         if not self._epub_parser or not getattr(self._epub_parser, '_chapters', None):
-            yield "No book loaded.", [], state
+            yield "No book loaded. Parse an EPUB first.", [], state
             return
         chapters = self._epub_parser._chapters
         if not chapters:
@@ -684,64 +684,68 @@ class AudiobookGUI:
             return
 
         self._log("Starting character and emotion analysis...")
-        yield "Starting analysis...", [], state
-        
+        yield "Initializing...", [], state
+
         try:
             from audiobook_ai.core.text_segmenter import TextSegmenter
             seg = TextSegmenter(max_words=150, min_words=20)
             all_segs = []
-            
+
             self._log("Segmenting text...")
             yield "Segmenting book into chunks...", [], state
-            
+
             for ch in chapters:
                 all_segs.extend(seg.segment_chapter(ch.text, ch.title, ch.spine_order))
-            
+
             if not all_segs:
                 yield "No text segments to analyze.", [], state
                 return
 
-            self._log(f"Total {len(all_segs)} chunks. Initializing LLM...")
-            yield f"Starting analysis of {len(all_segs)} chunks...", [], state
+            total_segs = len(all_segs)
+            self._log(f"Total {total_segs} chunks. Initializing LLM...")
+            yield f"Starting analysis of {total_segs} chunks...", [], state
 
             from audiobook_ai.analysis.character_analyzer import CharacterAnalyzer
             cfg = self.config.get_section("analysis")
             self._analyzer = CharacterAnalyzer(cfg)
             lang = self.config.get("general", "language", "french")
-            
+
             # Use the iterator for live updates
             for item in self._analyzer.analyze_segments_iter(all_segs, language=lang):
                 status = item.get("status", "")
                 msg = item.get("msg", "")
-                
-                if status in ["batch_start", "batch_done", "init"]:
-                    # Update the status box
-                    self._log(msg)
+
+                if status in ("init", "analyzing", "progress", "batch_start", "batch_done"):
+                    # Live progress update - show in status box
                     yield msg, [], state
                 elif status == "finished":
                     self._segment_tags, self._discovered_chars = item["result"]
                     state["analyzed"] = True
-                    
-                    # Build suggestions
+
+                    # Build character suggestions
                     chars = []
                     tags = list(self._segment_tags.values())
                     for cn in self._discovered_chars:
-                        s = self._voice_manager.suggest_voice_for_character(cn, tags)
-                        chars.append({"name": cn, "suggested_voice": s["suggested_voice"], "confidence": s["confidence"], "description": s["description"]})
-                    
-                    msg = f"Done! Found {len(chars)} characters."
-                    self._log(msg)
-                    yield msg, chars, state
-                    return
-                    
+                        emotion_list = list(set(
+                            t.emotion for t in tags if t.character_name == cn
+                        ))
+                        chars.append({
+                            "character": cn,
+                            "suggested_voice": "narrator_male",
+                            "segments": len(self._analyzer.get_character_segments(cn)),
+                            "emotions": emotion_list,
+                        })
+
+                    self._log(
+                        f"Analysis complete. Found {len(self._discovered_chars)} characters."
+                    )
+                    final_msg = f"Done! {len(self._discovered_chars)} characters, {total_segs} segments"
+                    yield final_msg, chars, state
+
         except Exception as e:
             import traceback
-            err_msg = f"Error: {e}\n{traceback.format_exc()}"
-            self._log(f"ANALYSIS FAILED: {err_msg}")
-            yield f"Failed: {e}", [], state
-    def _on_setup_default_voices(self):
-        """Create default voice profiles."""
-        try:
+            self._log(f"Analysis error: {e}\n{traceback.format_exc()}")
+            yield f"Error: {e}", [], state
             from audiobook_ai.tts.voice_manager import VoiceManager
             voices_dir = os.path.join(
                 self._project.project_dir if self._project else tempfile.gettempdir(),
