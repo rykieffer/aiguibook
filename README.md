@@ -1,370 +1,272 @@
-UNDER DEVELOPMENT!!!
+# AIGUIBook - AI Audiobook Generator
 
-# AIGUIBook - AI-Powered Audiobook Generator
+Transform EPUB ebooks into multi-voice audiobooks (M4B) with AI character voices, emotion detection, and voice cloning.
 
-**EPUB -> High-Quality French Audiobook with Character Voices & Emotions**
+## Architecture
 
-Transform your EPUB ebooks into professional-quality audiobooks with multiple character voices, emotion-aware delivery, and full chapter metadata. Runs entirely on your local GPU.
+AIGUIBook uses a **two-stage TTS pipeline**:
 
----
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                         STAGE 1: Character Analysis                 │
+│                                                                     │
+│  EPUB → Parser → Segmenter → LLM (LM Studio / OpenRouter)           │
+│              Detects: narrator vs dialogue, character names,         │
+│              emotions per segment                                   │
+└─────────────────────────────────────────────────────────────────────┘
+                                  │
+                                  ▼
+┌─────────────────────────────────────────────────────────────────────┐
+│                     STAGE 2: Reference Voice Generation             │
+│                                                                     │
+│  Bark TTS → Auto-generates WAV samples for each character           │
+│  (10 built-in French voices, no recording needed)                   │
+│                                                                     │
+│  ┌─ User can override Bark samples with: ───────────────────────┐   │
+│  │ • Upload custom WAV file (3+ seconds)                        │   │
+│  │ • Use ElevenLabs / any other TTS as reference source         │   │
+│  │ • Record your own voice                                      │   │
+│  └──────────────────────────────────────────────────────────────┘   │
+└─────────────────────────────────────────────────────────────────────┘
+                                  │
+                                  ▼
+┌─────────────────────────────────────────────────────────────────────┐
+│                    STAGE 3: Audiobook Synthesis                     │
+│                                                                     │
+│  Qwen3-TTS → Voice cloning using Bark WAV samples                   │
+│  → Generates full audiobook with character-appropriate voices       │
+│  → Validates with Whisper STT                                       │
+│  → Assembles chapters with crossfade + normalization                │
+└─────────────────────────────────────────────────────────────────────┘
+                                  │
+                                  ▼
+                        Final M4B with chapter markers
+```
 
 ## Features
 
-- **Multi-voice audiobooks**: Each character gets a distinct AI voice
-- **Emotion-aware delivery**: Detects anger, sadness, excitement, whispered passages, tension, etc.
-- **Voice cloning**: Clone any voice from 3 seconds of audio
-- **Voice design**: Create unique voices from text descriptions
-- **Character detection**: LLM automatically identifies who speaks what
-- **Quality validation**: Whisper-based verification with auto-retry on errors
-- **Chapter metadata**: Full M4B output with proper chapter markers
-- **Resume support**: Pause and resume generation at any point
-- **Beautiful GUI**: Gradio-based web interface, runs at localhost:7860
-- **French-first**: Optimized for French language with English fallback
+- **EPUB Parsing**: Extracts chapters, metadata, TOC from EPUB2/EPUB3
+- **Character Analysis**: LLM detects who is speaking in each text segment
+- **Emotion Detection**: Calm, excited, angry, sad, whisper, tense, urgent, amused, etc.
+- **Automatic Voice Assignment**: Maps characters to the best Bark voice preset
+- **Bark Reference Generation**: Creates WAV voice samples automatically
+- **Voice Cloning**: Qwen3-TTS clones voices from Bark reference audio
+- **Manual Override**: Upload custom WAV files for any character
+- **Quality Validation**: Whisper STT verifies generated audio accuracy
+- **M4B Output**: Chapter markers, metadata, normalized audio, crossfade
+- **Gradio GUI**: Web interface with 5 tabs (Setup, Voices, Preview, Generate, Settings)
+- **CLI Interface**: Full pipeline from command line
+- **Resumable Progress**: Save/analysis results to JSON, reuse without re-scanning
 
----
-
-## Hardware Requirements
-
-- **GPU**: NVIDIA GPU with 8GB+ VRAM (16GB+ recommended for RTX 5080/4080/4090)
-- **RAM**: 16GB+ system RAM
-- **Storage**: 10GB+ free (for models: ~4GB)
-- **FFmpeg**: Must be installed and in PATH
-
----
-
-## Quick Installation (WSL2 on Windows 11 - Recommended)
-
-No need for Python on Windows or Docker/Podman. WSL2 has direct GPU passthrough.
+## Installation
 
 ```bash
-# 1. In WSL2 Ubuntu terminal:
-sudo apt update && sudo apt install -y python3.12 python3.12-venv python3.12-dev ffmpeg
+git clone https://github.com/rykieffer/aiguibook.git
+cd aiguibook
 
-# 2. Verify GPU is visible
-nvidia-smi   # Should show your RTX 5080
+# Create conda environment
+conda create -n aiguibook python=3.12
+conda activate aiguibook
 
-# 3. Navigate to the project
-cd /path/to/audiobook-ai
-
-# 2. Create virtual environment
-python3.12 -m venv venv
-source venv/bin/activate
-
-# 3. Install PyTorch with CUDA 12.4 support
-pip install torch torchaudio --index-url https://download.pytorch.org/whl/cu124
-
-# 4. Install dependencies
+# Install dependencies
 pip install -r requirements.txt
 
-# 5. Install qwen-tts
+# Install Bark (if not auto-installed)
+pip install git+https://github.com/suno-ai/bark.git
+
+# Install Qwen3-TTS (for final synthesis)
 pip install qwen-tts
-
-# 6. Optional: Install flash-attention for faster inference
-pip install flash-attn --no-build-isolation
-
-# 7. Make sure FFmpeg is installed
-# Ubuntu/Debian:
-sudo apt install ffmpeg
-# Arch Linux:
-sudo pacman -S ffmpeg
-# Nix:
-nix-env -iA nixpkgs.ffmpeg
-
-# 8. Set environment variables (optional, for OpenRouter API character analysis)
-export OPENROUTER_API_KEY="sk-or-..."
-
-# 9. Launch the GUI
-python main.py
 ```
 
----
+### System Requirements
+- **GPU**: NVIDIA with CUDA support (8GB+ VRAM recommended)
+- **OS**: Linux (tested), Windows via WSL2
+- **Python**: 3.10+
+- **FFmpeg**: Required for audio assembly (`apt install ffmpeg`)
 
 ## Usage
 
-### GUI Mode (Recommended)
-
+### GUI Mode
 ```bash
 python main.py
+# Opens at http://localhost:7860
 ```
 
-Opens at **http://localhost:7860** with 5 tabs:
+**Tab 1: Setup**
+- Upload EPUB file
+- Parse book metadata
+- Set output format, language, TTS model
+- Run character analysis
 
-1. **Setup** - Upload EPUB, view book info, configure output settings
-2. **Voices** - Assign voices to characters, create new voices, preview them
-3. **Preview** - Test TTS with sample text and parameters
-4. **Generate** - Run the full pipeline with progress tracking, pause/resume
-5. **Settings** - TTS, LLM, output, and validation configuration
+**Tab 2: Voices**
+- View detected characters with segment counts
+- Bark auto-generates reference WAV samples
+- Upload custom WAV files to override Bark samples
+- Voice design with text descriptions
+
+**Tab 3: Preview**
+- Test TTS with sample text
+- Select voice, language, emotion
+- Listen to generated audio
+
+**Tab 4: Generate**
+- Full audiobook generation
+- Progress bar, chapter-by-chapter status
+- Start/Pause/Resume/Stop
+- Estimated time remaining
+
+**Tab 5: Settings**
+- TTS batch size, quality, device
+- Validation settings (WER threshold, retries)
+- LLM backend (LM Studio, OpenRouter, Ollama)
+- Save/Load configuration
 
 ### CLI Mode
-
 ```bash
-# Full pipeline: EPUB -> M4B
-python cli.py generate --input "book.epub" --output "./output/"
+# Full generation
+python cli.py generate --input book.epub --output ./audiobooks
 
-# Preview mode (first 3 chapters only)
-python cli.py generate --input "book.epub" --output "./output/" --preview-only
+# Parse and show metadata
+python cli.py parse --input book.epub
 
-# Just parse and inspect the EPUB
-python cli.py parse --input "book.epub"
+# Character analysis only
+python cli.py analyze --input book.epub
 
-# Run character/emotion analysis only
-python cli.py analyze --input "book.epub"
-
-# First-time setup: download TTS models, test GPU
+# Setup and model download
 python cli.py setup --download-models
 
-# List available voice profiles
+# Voice management
 python cli.py voices --list
-
-# Create default voices
-python cli.py voices --create default
+python cli.py voices --create narrator ref_audio.wav
+python cli.py voices --create-design "marcus" "Deep male voice, French accent" "Sample text"
 ```
 
----
+## Voice Options
 
-## Pipeline Overview
+### Bark Built-in Voices (10 French presets)
+| Voice ID | Description | Use Case |
+|----------|-------------|----------|
+| narrator_male | Deep authoritative male | Main narrator |
+| narrator_female | Warm female | Female narrator |
+| young_male | Energetic young male | Young male characters |
+| young_female | Cheerful young female | Young female characters |
+| elder_male | Mature, warm male | Older male characters |
+| elder_female | Grave, warm female | Older female characters |
+| angry_male | Firm, intense male | Angry/controlling characters |
+| soft_female | Gentle, soft female | Timid/calm characters |
+| robotic | Neutral, mechanical | Robots, AI voices |
 
+### Custom Voice Sources
+1. **Bark auto-generation**: Default, no recording needed
+2. **Upload WAV**: Any 3+ second WAV file
+3. **ElevenLabs**: Export from ElevenLabs → upload as WAV reference
+4. **Record yourself**: Use any recorder, export as WAV
+5. **Edge TTS**: Generate samples with Microsoft Edge voices (free)
+
+## Character Analysis Speed
+
+| Model | Speed | Notes |
+|-------|-------|-------|
+| Ministral 3B (LM Studio) | ~14 min/1400 segs | Great balance |
+| Qwen3.5-9B (LM Studio) | ~1-2 hours | Higher accuracy |
+| OpenRouter (GPT-4o) | ~5-10 min | Fastest, costs tokens |
+
+### Pre-filter Optimization
+~70-80% of segments are pure narration and are skipped by the LLM entirely (detected by absence of dialogue markers). Only dialogue segments hit the LLM.
+
+## Saving/Loading Analysis
+
+After character analysis completes, results are saved automatically to:
 ```
-EPUB File
-    |
-    v
-[1] EPUB Parser -- Extract chapters, metadata, TOC
-    |
-    v
-[2] Text Segmenter -- Split into TTS-friendly segments (~150 words each)
-    |
-    v
-[3] Character Analyzer (LLM) -- Detect speakers, emotions, assign voices
-    |
-    v
-[4] Voice Assignment -- Link each character to a voice profile
-    |
-    v
-[5] TTS Generation -- Qwen3-TTS generates audio per segment
-    |                                         |
-    |                              [5b] Whisper Validation (retry if WER > threshold)
-    |
-    v
-[6] Audio Assembly -- Concatenate, crossfade, normalize (-16 LUFS)
-    |
-    v
-[7] M4B Encoding -- Chapter markers, metadata, AAC compression
-    |
-    v
-Finished Audiobook (.m4b)
-```
-
----
-
-## Voice Management
-
-### Built-in Default Voices
-
-The system comes with 7 pre-configured French-friendly voice profiles:
-
-| Voice ID | Description |
-|----------|-------------|
-| `narrator_male` | Deep warm male, mature, authoritative |
-| `narrator_female` | Soft warm female, clear and elegant |
-| `young_male` | Young energetic male, bright |
-| `young_female` | Young cheerful female, animated |
-| `elder_male` | Older deep male, grave and wise |
-| `elder_female` | Older compassionate female, gentle |
-| `robotic` | Mechanical synthetic voice for sci-fi |
-
-### Creating Custom Voices
-
-**Option A: Voice Cloning** - Upload 3+ seconds of reference audio
-```bash
-# In the GUI: Voices tab -> Upload reference audio -> Assign name
+/tmp/aiguibook/{book_title}/character_analysis.json
 ```
 
-**Option B: Voice Design** - Describe the voice in text
-```bash
-# In the GUI: Voices tab -> Describe voice -> Click Generate
-# Example: "Deep male voice, gravelly, slightly British accent, menacing"
-```
-
-### Assigning Voices to Characters
-
-After character analysis, the GUI shows each discovered character. For each:
-- Select from existing voices
-- Upload a reference sample for cloning
-- Generate a new voice from description
-
----
-
-## Emotion System
-
-The LLM analyzes context to detect emotions in each segment:
-
-| Emotion | French Instruction |
-|---------|-------------------|
-| calm | "Parlez d'un ton calme et posé" |
-| excited | "Parlez avec excitation et enthousiasme" |
-| angry | "Parlez avec colère, voix ferme et intense" |
-| sad | "Parlez d'une voix triste et mélancolique" |
-| whisper | "Chuchotez d'une voix mystérieuse" |
-| tense | "Parlez d'une voix tendue et nerveuse" |
-| urgent | "Parlez rapidement, avec urgence" |
-| amused | "Parlez avec amusement, ton léger" |
-| contemptuous | "Parlez avec mépris, voix froide" |
-| surprised | "Parlez avec surprise et étonnement" |
-
----
+Reload this file later to skip re-analysis.
 
 ## Configuration
 
-Edit `~/.aiguibook/config.yaml`:
+Config file location: `~/.aiguibook/config.yaml`
 
 ```yaml
 tts:
   model: Qwen/Qwen3-TTS-12Hz-1.7B-Base
-  backend_local: true
   device: cuda
   dtype: bfloat16
   batch_size: 4
 
 analysis:
-  llm_backend: openrouter        # or "ollama"
-  openrouter_api_key: ""         # Set via OPENROUTER_API_KEY env var
-  openrouter_model: anthropic/claude-sonnet-4-20250514
-  ollama_model: qwen3:32b
-  ollama_base_url: http://localhost:11434
-
-voices:
-  narrator_ref: ""               # Path to narrator reference audio
-  character_refs: {}             # {character_name: audio_path}
+  llm_backend: lmstudio
+  lmstudio_base_url: http://localhost:1234/v1
+  openrouter_api_key: ""  # or set OPENROUTER_API_KEY env var
 
 output:
   format: m4b
   bitrate: 128k
-  sample_rate: 24000
-  chapter_markers: true
   normalize_audio: true
   crossfade_duration: 0.5
 
 validation:
   enabled: true
-  whisper_model: distil-medium.en
+  whisper_model: distil-small.en
   max_wer: 15
   max_retries: 2
-
-general:
-  language: french
-  language_fallback: english
-  max_segments: 99999
-  preview_mode: false
 ```
-
----
-
-## Models
-
-AIGUIBook downloads these models automatically on first run (or use `python cli.py setup --download-models`):
-
-| Model | Size | Purpose |
-|-------|------|---------|
-| Qwen/Qwen3-TTS-12Hz-1.7B-Base | ~3.4GB | Main TTS with voice cloning |
-| Qwen/Qwen3-TTS-12Hz-0.6B-VoiceDesign | ~1.2GB | Voice design from descriptions |
-| faster-whisper (distil-medium.en) | ~300MB | Quality validation |
-
-All models downloaded to `~/.cache/huggingface/`.
-
----
-
-## Performance
-
-On RTX 5080 (~16GB VRAM) with Qwen3-TTS-1.7B-Base:
-
-- **TTS speed**: ~300% real-time (varies with text complexity)
-- **VRAM usage**: ~4-6GB during generation
-- **Typical book**: 10-hour audiobook in ~3-4 hours
-- **Validation**: Adds ~20% overhead (depends on settings)
-
-Speed tips:
-- Increase `batch_size` in config (4-8 is good for 16GB VRAM)
-- Disable validation if you trust the output (`validation.enabled: false`)
-- Use `dtype: float16` instead of `bfloat16` for slight speedup
-- Set `whisper_device: cpu` to free GPU VRAM if needed
-
----
-
-## Troubleshooting
-
-### "CUDA Out of Memory"
-- Reduce `batch_size` to 2 or 1
-- Set `dtype: float16` instead of `bfloat16`
-- Close other GPU applications
-- Use the 0.6B model variant
-
-### "FFmpeg not found"
-```bash
-sudo apt install ffmpeg  # Ubuntu
-brew install ffmpeg      # macOS
-```
-
-### Character analysis not working
-- Check your `OPENROUTER_API_KEY` environment variable
-- Or switch to `llm_backend: ollama` with local Ollama running
-
-### French pronunciation issues
-- Use `language: french` in config
-- The model auto-detects but explicitly setting it helps
-- Word substitutions can be added in the GUI for problematic names
-
-### Audio sounds robotic or flat
-- Ensure emotion detection is enabled
-- Try different reference audio for voice cloning
-- Increase the segment overlap/crossfade duration
-
----
 
 ## Project Structure
 
 ```
 audiobook-ai/
-├── main.py                         # GUI entry point (python main.py)
-├── cli.py                          # CLI entry point
-├── requirements.txt                # All dependencies
-├── pyproject.toml                  # Package metadata
 ├── audiobook_ai/
 │   ├── __init__.py
-│   ├── core/
-│   │   ├── epub_parser.py          # EPUB2/3 parsing
-│   │   ├── text_segmenter.py       # Text segmentation for TTS
-│   │   ├── project.py              # Project state management
-│   │   └── config.py               # Configuration management
 │   ├── analysis/
-│   │   └── character_analyzer.py   # LLM character/emotion detection
-│   ├── tts/
-│   │   ├── qwen_engine.py          # Qwen3-TTS wrapper
-│   │   └── voice_manager.py        # Voice profiles & design
+│   │   ├── __init__.py
+│   │   └── character_analyzer.py   # LLM character/emotion analysis
 │   ├── audio/
-│   │   ├── assembly.py             # Audio merging, M4B output
-│   │   └── validation.py           # Whisper quality validation
-│   └── gui/
-│       └── app.py                  # Gradio web interface
-├── voices/                         # Voice profile storage
-├── output/                         # Generated audiobooks
-└── work/                           # Temporary working files
+│   │   ├── __init__.py
+│   │   ├── assembly.py              # M4B assembly with chapter markers
+│   │   └── validation.py            # Whisper STT validation
+│   ├── core/
+│   │   ├── __init__.py
+│   │   ├── config.py                # YAML configuration manager
+│   │   ├── epub_parser.py           # EPUB2/EPUB3 parser
+│   │   ├── project.py               # Project state management
+│   │   └── text_segmenter.py        # Text segmentation for TTS
+│   ├── gui/
+│   │   ├── __init__.py
+│   │   └── app.py                   # Gradio web interface
+│   └── tts/
+│       ├── __init__.py
+│       ├── bark_engine.py           # Bark reference voice generator
+│       └── voice_manager.py         # Voice profiles management
+├── main.py                          # GUI entry point
+├── cli.py                           # CLI entry point
+├── requirements.txt                 # Python dependencies
+├── pyproject.toml                   # Package metadata
+└── README.md                        # This file
 ```
 
----
+## Dependencies
+
+| Package | Purpose |
+|---------|---------|
+| bark | Reference voice generation |
+| qwen-tts | Final audiobook TTS with voice cloning |
+| torch | Deep learning backend |
+| faster-whisper | Audio validation |
+| gradio | Web GUI |
+| ebooklib | EPUB parsing |
+| pydub | Audio manipulation |
+| ffmpeg-python | M4B assembly |
+| jiwer | WER calculation |
+| openai | LLM API (OpenRouter) |
 
 ## License
 
-MIT License. Built for Roland's sci-fi audiobook collection.
+MIT License — see LICENSE file.
 
----
+## Credits
 
-## Future Ideas
-
-- [ ] Audiobookshelf server integration for library management
-- [ ] PDF/mobi/azw3 input support
-- [ ] Background music and sound effects for sci-fi scenes
-- [ ] Voice marketplace / community voice sharing
-- [ ] Docker container for easy deployment
-- [ ] Whisper model fine-tuning for French name pronunciation
-- [ ] Multi-GPU support for faster generation
-- [ ] Streaming/audio-while-generating playback
+- **Bark** - Suno AI (https://github.com/suno-ai/bark)
+- **Qwen3-TTS** - Alibaba (https://huggingface.co/Qwen)
+- **faster-whisper** - Guillaume Klein
+- **Gradio** - Hugging Face

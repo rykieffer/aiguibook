@@ -20,6 +20,12 @@ DEFAULT_CONFIG = {
         "dtype": "bfloat16",
         "batch_size": 4,
     },
+    "reference": {
+        "engine": "bark",  # bark or upload
+        "bark_device": "cuda",
+        "bark_use_small": False,
+        "bark_temperature": 0.7,
+    },
     "analysis": {
         "llm_backend": "openrouter",
         "openrouter_api_key": "",
