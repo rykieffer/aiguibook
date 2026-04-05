@@ -509,7 +509,7 @@ class CharacterAnalyzer:
 
         # Deduplicate character name variants - merge similar names
         # Uses a simple heuristic: if one name is a substring of another, merge them
-        deduped = self._deduplicate_characters(unique_chars)
+        deduped = self.deduplicate_characters(unique_chars)
         unique_merged = list(deduped.keys())
         print(f"\n[DEDUP] Merged {len(unique_chars)} characters -> {len(unique_merged)} unique characters:")
         for canonical, variants in deduped.items():
