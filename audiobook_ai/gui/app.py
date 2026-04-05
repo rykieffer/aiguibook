@@ -223,96 +223,56 @@ class AudiobookGUI:
             return f"**Error:** {str(e)}", [], state
 
     def run_analysis(self, file_path, state: dict):
-        """Yields: (status_string: str, table_data: list, state: dict)"""
-        # Initialize data to prevent unbound errors
         table_data = []
-        
         try:
-            # 1. Ensure we are parsed
             if not state.get("parsed"):
-                if file_path:
-                    info, _, state = self.parse_epub(file_path, state)
-                else:
-                    yield "Please upload a book first.", [], state
-                    return
-            
-            if not state.get("parsed"):
-                yield "Parse failed.", [], state
-                return
+                if file_path: info, _, state = self.parse_epub(file_path, state)
+                else: yield "Please upload a book first.", [], state; return
+            if not state.get("parsed"): yield "Parse failed.", [], state; return
 
             yield "Segmenting text...", [], state
-            
             from audiobook_ai.core.text_segmenter import TextSegmenter
             from audiobook_ai.analysis.character_analyzer import CharacterAnalyzer
             
             seg = TextSegmenter()
             all_segs = []
-            
-            # Get chapters (safe access)
-            chapters = []
-            if self.parser:
-                if hasattr(self.parser, '_chapters'):
-                    chapters = self.parser._chapters
-                elif hasattr(self.parser, 'chapters'):
-                    chapters = self.parser.chapters
-            
-            # Fall back to state if parser is weird
-            if not chapters and "chapters" in state:
-                chapters = state["chapters"]
-
-            if not chapters:
-                yield "Error: No chapters found in parsed book.", [], state
-                return
-
-            yield f"Found {len(chapters)} chapters. Analyzing...", [], state
-            
-            # Segment
+            chapters = self.parser._chapters if self.parser else state.get("chapters", [])
             for ch in chapters:
-                # Robust handling of chapter object vs dict
-                if isinstance(ch, dict):
-                    txt = ch.get("text", "")
-                    title = ch.get("title", "")
-                    idx = ch.get("spine_order", 0)
-                else:
-                    txt = getattr(ch, 'text', "")
-                    title = getattr(ch, 'title', "")
-                    idx = getattr(ch, 'spine_order', 0)
-                
-                s = seg.segment_chapter(txt, title, idx)
-                all_segs.extend(s)
+                txt = ch.get("text","") if isinstance(ch, dict) else getattr(ch, 'text', "")
+                title = ch.get("title","") if isinstance(ch, dict) else getattr(ch, 'title', "")
+                idx = ch.get("spine_order",0) if isinstance(ch, dict) else getattr(ch, 'spine_order', 0)
+                all_segs.extend(seg.segment_chapter(txt, title, idx))
             
             self.segments = all_segs
-            yield f"Segmented into {len(all_segs)} chunks. Starting LLM...", [], state
+            yield f"Found {len(all_segs)} segments. Analyzing with LLM...", [], state
             
-            # Analyze
-            cfg = self.config.get_section("analysis")
-            self.analyzer = CharacterAnalyzer(cfg)
-            tags, chars, _dedup_map = self.analyzer.analyze_segments(all_segs)
+            self.analyzer = CharacterAnalyzer(self.config.get_section("analysis"))
+            tags, chars, _dedup_map = {}, [], {}
+            
+            # LIVE PROGRESS LOOP: Safe iteration over analyzer generator
+            for item in self.analyzer.analyze_segments_iter(all_segs):
+                if item["status"] == "progress":
+                    yield item["msg"], [], state
+                elif item["status"] == "finished":
+                    result = item["result"]
+                    tags, chars, _dedup_map = result[0], result[1], result[2]
             
             self.tags = tags
             self.characters = chars
+            self.dedup_map = _dedup_map
             state["analyzed"] = True
             state["tags"] = tags
             state["chars"] = chars
             
-            yield "Analysis complete. Building table...", [], state
-            
-            # Format table
+            yield "Building results table...", [], state
             for c in chars:
                 count = sum(1 for t in tags.values() if t.character_name == c)
                 emo = list(set([t.emotion for t in tags.values() if t.character_name == c]))
                 table_data.append([c, count, ", ".join(emo)])
             
-            # Return: Text, List, Dict
-            yield f"Analysis Complete. Found {len(chars)} characters.", table_data, state
-
+            yield f"Analysis Complete! Found {len(chars)} characters.", table_data, state
         except Exception as e:
-            logger.error(str(e))
-            import traceback
-            traceback.print_exc()
-            # Return: Text, List, Dict (even in error)
             yield f"Error: {e}", table_data, state
-
     def save_analysis(self, state: dict):
         if not state.get("analyzed"): return "Nothing to save."
         try:
