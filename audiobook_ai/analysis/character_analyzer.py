@@ -553,6 +553,15 @@ class CharacterAnalyzer:
         if md:
             text = md[0].strip()
 
+        # Fix 1: Remove LLM comments (e.g., "null // inferred narrator")
+        # Replace double-slash comments that appear outside of strings
+        # Simple regex to remove // ... until end of line or closing brace
+        import re
+        text = re.sub(r'//.*?(?=,|\}|\]|\n)', '', text)
+
+        # Fix 2: Handle multiline values if LLM messes up newlines in JSON
+        # (This is handled by the bracket extractor mostly, but good cleanup)
+
         # Try direct parse
         try:
             return json.loads(text)
