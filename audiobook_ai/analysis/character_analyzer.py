@@ -281,10 +281,12 @@ class CharacterAnalyzer:
         language: str = "french",
     ) -> Generator[Dict[str, Any], None, None]:
         """Generator: yields progress updates during analysis."""
+        import sys
         all_tags: Dict[str, SpeechTag] = {}
         all_chars: List[str] = []
         total = len(segments_list)
         done = 0
+        start_time = time.time()
 
         if total > 0:
             yield {"status": "init", "msg": f"Initialized. {total} segments to analyze."}
@@ -311,7 +313,9 @@ class CharacterAnalyzer:
                 all_tags[seg_id] = tag
                 continue
 
+            seg_start = time.time()
             tag = self._analyze_single_segment(seg_id, seg_text, language)
+            seg_elapsed = time.time() - seg_start
             all_tags[seg_id] = tag
 
             if tag.character_name:
@@ -321,14 +325,45 @@ class CharacterAnalyzer:
                 if tag.character_name not in all_chars:
                     all_chars.append(tag.character_name)
 
-            if done % 10 == 0 or done == total:
+            # Print progress every 20 segments + final
+            if done % 20 == 0 or done == total:
+                elapsed = time.time() - start_time
+                avg = elapsed / done
+                remaining = avg * (total - done)
+                eta_m = int(remaining / 60)
+                eta_s = int(remaining % 60)
+                pct = done / total * 100
+                
+                # Overwrite previous progress line
+                progress_str = (
+                    f"\r  [{done}/{total}] {pct:5.1f}%  |  "
+                    f"~{eta_m:02d}:{eta_s:02d} ETA  |  "
+                    f"{len(all_chars)} chars found  |  "
+                    f"avg {avg:.1f}s/seg   "
+                )
+                sys.stdout.write(progress_str)
+                sys.stdout.flush()
+                
+                # Print character list on every 100 or at end
+                if done % 100 == 0 or done == total:
+                    chars_str = ", ".join(all_chars[:10])
+                    if len(all_chars) > 10:
+                        chars_str += f" (+{len(all_chars)-10} more)"
+                    print(f"\n    Characters: {chars_str}")
+    
                 yield {
                     "status": "progress",
-                    "msg": f"{done}/{total} segments analyzed. {len(all_chars)} characters found.",
+                    "msg": f"{done}/{total} ({pct:.1f}%), ETA {eta_m:02d}:{eta_s:02d}, {len(all_chars)} chars",
                 }
 
+        # Final newline
+        print()
         unique_chars = list(dict.fromkeys(all_chars))
-        logger.info(f"Analysis complete: {len(all_tags)} segments, {len(unique_chars)} characters")
+        total_time = time.time() - start_time
+        logger.info(
+            f"Analysis complete: {len(all_tags)} segments, "
+            f"{len(unique_chars)} characters in {total_time:.0f}s"
+        )
         yield {"status": "finished", "msg": "Analysis complete!", "result": (all_tags, unique_chars)}
 
     def _analyze_single_segment(
