@@ -377,7 +377,7 @@ class CharacterAnalyzer:
                 # Log prompt size for debugging
                 sys_prompt = "You are an expert literary analyst. Respond ONLY with a valid JSON array. No text, no explanation, no markdown."
                 prompt_size = len(sys_prompt) + len(prompt)
-                prompt_tokens_est = prompt_size // 4  # rough estimate
+                prompt_tokens_est = prompt_size // 4
                 total_chars = len(prompt)
                 logger.info(
                     f"LLM request: model={self._model}, backend={self._backend}, "
@@ -391,51 +391,55 @@ class CharacterAnalyzer:
                         {"role": "user", "content": prompt},
                     ],
                     temperature=0.1,
-                    # Lower max_tokens since many models choke on high values
-                    max_tokens=2000,
                     timeout=300.0,
                 )
 
                 finish_reason = response.choices[0].finish_reason
                 raw_content = response.choices[0].message.content
-                is_empty = raw_content is None or raw_content.strip() == ""
-                
+                content = raw_content.strip() if raw_content else ""
+
+                # Log diagnostics
+                is_empty = not content
                 logger.info(
                     f"LLM response: finish_reason={finish_reason}, "
-                    f"content_type={type(raw_content).__name__}, "
                     f"content_len={len(raw_content) if raw_content else 0}, "
                     f"is_empty={is_empty}"
                 )
 
-                # Always print raw response for debugging
-                if is_empty or len(raw_content) < 10:
+                # Show raw response for debugging
+                if is_empty:
                     print(f"\n{'='*70}")
-                    print(f"  LLM RAW RESPONSE (attempt {attempt + 1}/{self._max_retries})")
+                    print(f"  LLM EMPTY RESPONSE (attempt {attempt + 1}/{self._max_retries})")
                     print(f"  finish_reason: {finish_reason}")
                     print(f"  content_repr: {repr(raw_content)}")
                     print(f"{'='*70}\n")
-                    logger.error(
-                        f"LLM returned empty/truncated response! "
-                        f"finish_reason={finish_reason}, repr={repr(raw_content)}"
-                    )
-                else:
-                    # Show first 200 chars of response
+                    logger.error(f"LLM returned empty response! finish_reason={finish_reason}")
+                    if finish_reason == "length":
+                        logger.error(
+                            "LM Studio is likely truncating output. In LM Studio: "
+                            "go to Settings > Model and set Max Context to 8192 or higher."
+                        )
+                    continue
+
+                # Show first part of response
+                if len(content) <= 500:
                     print(f"\n{'='*70}")
-                    print(f"  LLM RESPONSE (first 300 chars)")
+                    print(f"  LLM RESPONSE (full, {len(content)} chars)")
                     print(f"{'='*70}")
-                    print(raw_content[:300])
-                    print(f"... (total {len(raw_content)} chars)")
+                    print(content)
+                    print(f"{'='*70}\n")
+                else:
+                    print(f"\n{'='*70}")
+                    print(f"  LLM RESPONSE (first 500 of {len(content)} chars)")
+                    print(f"{'='*70}")
+                    print(content[:500])
+                    print(f"\n...(truncated)")
                     print(f"{'='*70}\n")
 
-                content = raw_content.strip() if raw_content else ""
+                # Try to extract JSON
+                parsed = self._extract_json(content)
 
                 if parsed is None:
-                    # Always print the raw response so the user can see it
-                    print(f"\n{'='*70}")
-                    print(f"  LLM RAW RESPONSE (attempt {attempt + 1}/{self._max_retries})")
-                    print(f"{'='*70}")
-                    print(content[:3000])
-                    print(f"{'='*70}\n")
                     logger.warning(
                         f"LLM returned non-JSON response (attempt {attempt + 1})"
                     )
@@ -448,7 +452,7 @@ class CharacterAnalyzer:
                             parsed = parsed[key]
                             break
 
-                # Handle the case where the model returns a single object instead of an array
+                # Handle single object instead of array
                 if isinstance(parsed, dict):
                     parsed = [parsed]
 
