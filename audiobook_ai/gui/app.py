@@ -23,6 +23,7 @@ QWEN_VOICE_STYLES = {
 
 class AudiobookGUI:
     def __init__(self, config):
+        self._log_messages = []  # Ensure it's initialized
         self.config = config
         self.app = None
         
@@ -33,6 +34,18 @@ class AudiobookGUI:
         self.tags = {}
         self.characters = []
         self.narrator_ref_path = None
+
+
+    def _log(self, msg):
+        """Add a log message to internal list and logger."""
+        import time
+        import logging
+        logger = logging.getLogger("AIGUIBook")
+        logger.info(msg)
+        
+        if not hasattr(self, '_log_messages'):
+            self._log_messages = []
+        self._log_messages.append("[%s] %s" % (time.strftime("%H:%M:%S"), msg))
 
     def build(self):
         self.theme = gr.themes.Soft(primary_hue="violet", secondary_hue="blue")
