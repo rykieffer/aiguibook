@@ -497,7 +497,18 @@ class AudiobookGUI:
             self._log(f"Fatal Error: {e}")
             yield 0, f"Error: {e}", self._get_logs(), gr.update(interactive=True), gr.update(visible=False), None
 
-    def launch(self, port=7860, share=False):
+    def launch(self, port=7860, share=False, server_name="0.0.0.0"):
         if self.app is None: self.build()
         self.app.queue()
-        self.app.launch(server_name="0.0.0.0", server_port=port, share=share)
+        
+        # Move theme and css to launch() to avoid Gradio 6.0 warning
+        theme = self.theme
+        css = self.css
+        
+        self.app.launch(
+            server_name=server_name,
+            server_port=port, 
+            share=share,
+            theme=theme,
+            css=css
+        )
