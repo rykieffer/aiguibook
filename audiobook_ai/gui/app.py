@@ -278,57 +278,77 @@ class AudiobookGUI:
         return f"Saved to {path}"
 
     def load_analysis_json(self, file_load_json, state):
-        if not file_load_json: return "No file", {}, state
-        
-        with open(file_load_json, "r") as f:
-            data = json.load(f)
-        
-        self._characters = data.get("chars", [])
-        state["analyzed"] = True
-        self._log(f"Loaded {len(self._characters)} characters.")
-        return f"Loaded {len(self._characters)} chars.", {"chars": self._characters}, state
-
-    # --- Tab 2 Handlers (Voice Design) ---
-    def design_narrator(self, desc_text, ref_wav):
-        self.narrator_voice_desc = desc_text
-        engine = self._get_engine()
-        
         try:
-            # If user uploaded a WAV, use it
-            if ref_wav:
-                self.narrator_wav_path = ref_wav
-                self._log(f"Narrator set to uploaded WAV.")
-                return f"Loaded uploaded WAV.", ref_wav
-
-            # Otherwise, Design Voice
-            self._log(f"Designing Narrator Voice: {self.narrator_voice_desc}")
+            import json
             
-            # Load VoiceDesign Model
-            engine.load_model(self._voice_model_variant_design)
+            # Handle path input safely
+            path = ""
+            if isinstance(file_load_json, str):
+                path = file_load_json
+            elif isinstance(file_load_json, dict):
+                path = file_load_json.get("name") or file_load_json.get("path")
             
-            out_path = os.path.join(tempfile.gettempdir(), "narrator_voice.wav")
-            test_text = "Bonjour, ceci est le test de la voix du narrateur."
+            if not path:
+                self._log("No file path received.")
+                return "No file selected", [], state
             
-            res_path = engine.design_voice(
-                text=test_text,
-                instruction=self.narrator_voice_desc,
-                language="french",
-                output_path=out_path
-            )
+            self._log(f"Loading JSON: {path}")
             
-            if res_path:
-                self.narrator_wav_path = res_path
-                self._log(f"Narrator voice designed successfully.")
-                # Unload Design model to save VRAM
-                engine.unload_model()
-                return f"Voice Designed: {res_path}", res_path
-            else:
-                return "Design failed.", None
+            with open(path, "r") as f:
+                data = json.load(f)
+            
+            # Extract characters
+            chars = data.get("chars", [])
+            
+            # Fallback: extract from tags if chars list is missing
+            if not chars:
+                tags = data.get("tags", {})
+                unique_chars = set()
+                for t_data in tags.values():
+                    # Check both key names
+                    c = t_data.get("char") or t_data.get("character_name")
+                    if c:
+                        unique_chars.add(c)
+                chars = sorted(list(unique_chars))
+            
+            self._characters = chars
+            state["analyzed"] = True
+            state["chars"] = chars
+            
+            # Store tags
+            raw_tags = data.get("tags", {})
+            self._tags = raw_tags
+            state["tags"] = raw_tags
+            
+            # Build Dataframe Data: [[Name (str), Count (int), Emotions (str)]]
+            df_data = []
+            for char_name in chars:
+                if not char_name: continue
+                count = 0
+                emotions = set()
+                for sid, t_data in raw_tags.items():
+                    c_name = t_data.get("char") or t_data.get("character_name")
+                    if c_name == char_name:
+                        count += 1
+                        emo = t_data.get("emotion")
+                        if emo: emotions.add(emo)
                 
+                df_data.append([str(char_name), int(count), ", ".join(sorted(list(emotions)))])
+            
+            # Ensure we return a valid Dataframe structure even if logic fails
+            if not df_data and chars:
+                df_data = [[str(c), 0, ""] for c in chars]
+            
+            self._log(f"Loaded {len(chars)} characters. Dataframe rows: {len(df_data)}.")
+            self._log(f"First row preview: {df_data[0] if df_data else 'None'}")
+            
+            return f"Loaded {len(chars)} characters.", df_data, state
+
         except Exception as e:
-            engine.unload_model()
-            self._log(f"Narrator Design Error: {e}")
-            return f"Error: {e}", None
+            import traceback
+            tb = traceback.format_exc()
+            self._log(f"Error loading JSON: {e}\n{tb}")
+            return f"Error: {e}", [], state
 
     def design_all_characters(self, global_desc, state):
         if not state.get("analyzed"):
