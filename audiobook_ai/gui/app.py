@@ -143,6 +143,7 @@ class AudiobookGUI:
                                 )
                                 file_narrator_ref = gr.File(label="OR Upload Reference (WAV)", file_types=[".wav"], type="filepath")
                                 btn_design_narrator = gr.Button("Design / Load Narrator", variant="primary")
+                                btn_save_narrator = gr.Button("💾 Save Narrator to Library", variant="secondary")
                                 status_narrator = gr.Textbox(label="Narrator Status", interactive=False)
                                 audio_narrator_preview = gr.Audio(label="Narrator Preview", interactive=False)
 
@@ -167,6 +168,7 @@ class AudiobookGUI:
                                     lines=2
                                 )
                                 btn_design_all_chars = gr.Button("Design ALL Character Voices", variant="primary")
+                                btn_save_chars = gr.Button("💾 Save All Voices to Library", variant="secondary")
                                 status_chars = gr.Textbox(label="Characters Status", interactive=False)
 
                     btn_design_narrator.click(
@@ -389,6 +391,45 @@ class AudiobookGUI:
         except Exception as e:
             engine.unload_model()
             return f"Error: {e}", None
+
+    def save_narrator_voice(self):
+        """Save narrator voice to permanent library."""
+        import shutil
+        if not self.narrator_wav_path or not os.path.exists(self.narrator_wav_path):
+            return "Error: No narrator voice generated to save."
+        
+        lib_dir = os.path.join(os.path.expanduser("~"), "audiobooks", "voices", "narrator")
+        os.makedirs(lib_dir, exist_ok=True)
+        
+        # Generate persistent filename
+        fname = f"narrator_{time.strftime('%Y%m%d_%H%M%S')}.wav"
+        dest_path = os.path.join(lib_dir, fname)
+        
+        shutil.copy2(self.narrator_wav_path, dest_path)
+        self._log(f"Saved narrator voice to {dest_path}")
+        return f"Saved to: {dest_path}"
+
+    def save_all_character_voices(self):
+        """Save all character voices to permanent library."""
+        import shutil
+        if not self.character_voice_paths:
+            return "Error: No character voices generated to save."
+        
+        lib_dir = os.path.join(os.path.expanduser("~"), "audiobooks", "voices", "characters")
+        os.makedirs(lib_dir, exist_ok=True)
+        
+        saved_count = 0
+        for char_name, wav_path in self.character_voice_paths.items():
+            if os.path.exists(wav_path):
+                clean_name = char_name.replace(" ", "_").lower()
+                fname = f"{clean_name}_{time.strftime('%Y%m%d_%H%M%S')}.wav"
+                dest_path = os.path.join(lib_dir, fname)
+                shutil.copy2(wav_path, dest_path)
+                saved_count += 1
+        
+        msg = f"Saved {saved_count} voices to: {lib_dir}"
+        self._log(msg)
+        return msg
 
     def design_all_characters(self, global_desc, state):
         if not state.get("analyzed"):
