@@ -30,12 +30,12 @@ class TestAiguibookPipeline(unittest.TestCase):
         with open(analysis_path, "r", encoding="utf-8") as f:
             data = json.load(f)
             
-        raw_tags = data.get("tags", {})
+        tags_dict = data.get("tags", {})
         chars = data.get("chars", [])
         
         # FIX: Convert to SpeechTags
         tags_objects = {}
-        for sid, t in raw_tags.items():
+        for sid, t in tags_dict.items():
              speaker = t.get("speaker", "narrator")
              char_name = t.get("char")
              emo = t.get("emotion", "neutral")

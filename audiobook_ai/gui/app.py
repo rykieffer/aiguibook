@@ -134,7 +134,7 @@ class AudiobookGUI:
                         with gr.Column():
                             btn_start = gr.Button("START GENERATION", variant="primary", size="lg")
                             btn_resume = gr.Button("RESUME", variant="secondary", visible=False)
-                            chk_preview = gr.Checkbox(label="Preview Mode (First 3 Chapters)", value=False)
+                            chk_preview = gr.Checkbox(label="Preview Mode (First Chapter Only)", value=True)
                             chk_val = gr.Checkbox(label="Enable Validation", value=True)
                         
                         with gr.Column():
@@ -327,6 +327,8 @@ class AudiobookGUI:
             tags_objects = {}
             from audiobook_ai.analysis.character_analyzer import SpeechTag, EMOTION_INSTRUCTIONS_FR
             
+            tags_dict = data.get("tags", {})
+            
             for sid, t in tags_dict.items():
                 speaker = t.get("speaker", "narrator")
                 char_name = t.get("char")
@@ -499,7 +501,7 @@ class AudiobookGUI:
             # Limit to preview mode if requested
             chapter_indices = sorted(chapters_with_text.keys())
             if preview_mode:
-                chapter_indices = chapter_indices[:3]
+                chapter_indices = chapter_indices[:1]
                 total_to_gen = sum(len(chapters_with_text[i]) for i in chapter_indices)
                 add_log("PREVIEW MODE: Limiting to first %d chapters (%d segments)" % (len(chapter_indices), total_to_gen))
             else:
