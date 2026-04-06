@@ -90,7 +90,11 @@ class TTSEngine:
                 except Exception as e2:
                     raise RuntimeError(f"Failed to load Qwen3-TTS model: {e2}") from e2
 
-            self._model.eval()
+            # Handle wrappers safely (RTX 5080 / cu130 updates often wrap the model)
+            if hasattr(self._model, 'eval'):
+                self._model.eval()
+            elif hasattr(self._model, 'model') and hasattr(self._model.model, 'eval'):
+                self._model.model.eval()
             self._initialized = True
             logger.info("Qwen3-TTS model initialized successfully")
 
