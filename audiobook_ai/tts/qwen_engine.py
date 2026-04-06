@@ -169,7 +169,12 @@ class TTSEngine:
                 if ref_text:
                     gen_kwargs["ref_text"] = ref_text
 
-                result = self._model.generate_voice_clone(**gen_kwargs)
+                # Detect the real model object (sometimes it's wrapped in .model)
+                model_obj = self._model
+                if hasattr(self._model, 'model'):
+                    model_obj = self._model.model
+
+                result = model_obj.generate_voice_clone(**gen_kwargs)
                 duration = time.time() - start_time
 
                 if isinstance(result, dict) and "duration" in result:
@@ -182,7 +187,13 @@ class TTSEngine:
                     progress_callback(0.3, "Generating speech...")
 
                 start_time = time.time()
-                result = self._model.generate(
+                
+                # Detect the real model object (sometimes it's wrapped in .model)
+                model_obj = self._model
+                if hasattr(self._model, 'model'):
+                    model_obj = self._model.model
+                
+                result = model_obj.generate(
                     text=full_text,
                     language=language,
                     output_path=output_path,
