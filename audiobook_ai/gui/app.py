@@ -135,6 +135,8 @@ class AudiobookGUI:
                             btn_start = gr.Button("START GENERATION", variant="primary", size="lg")
                             btn_resume = gr.Button("RESUME", variant="secondary", visible=False)
                             chk_preview = gr.Checkbox(label="Preview Mode (First Chapter Only)", value=True)
+                            file_epub_selection = gr.File(label="Book Source (EPUB) - Required to generate audio if not already parsed", file_types=[".epub"], type="filepath")
+                            md_epub_note = gr.Markdown("*If 'No EPUB path' error, please select the EPUB file here.*")
                             chk_val = gr.Checkbox(label="Enable Validation", value=True)
                         
                         with gr.Column():
@@ -192,7 +194,7 @@ class AudiobookGUI:
             # 3. Generation
             btn_start.click(
                 fn=self.start_generation, 
-                inputs=[chk_preview, chk_val, state], 
+                inputs=[file_epub_selection, chk_preview, chk_val, state], 
                 outputs=[progress, phase, logs, btn_start, btn_resume]
             )
 
@@ -360,7 +362,7 @@ class AudiobookGUI:
         logger.info(f"Preview requested: {voice_name}, file: {ref_file}")
         return None
 
-    def start_generation(self, preview_mode, val_mode, state):
+    def start_generation(self, file_epub, preview_mode, val_mode, state):
         """Full audiobook generation pipeline with verbose logging."""
         import time
         import threading
@@ -430,9 +432,16 @@ class AudiobookGUI:
             yield 15, "Re-loading EPUB...", "\n".join(log), gr.update(visible=False), gr.update(visible=False)
 
             epub_path = self._last_epub_path if hasattr(self, '_last_epub_path') else None
+            
+            # Fallback: If no path in memory, use the file input from UI
+            if not epub_path and file_epub:
+                epub_path = file_epub
+                self._last_epub_path = file_epub # Save it for next time
+                add_log("Using EPUB from file input: %s" % os.path.basename(epub_path))
+
             if not epub_path:
-                add_log("ERROR: No EPUB path available. Please re-parse the book.")
-                yield 0, "Error: Re-parse book first.", "\n".join(log), gr.update(interactive=True), gr.update(visible=False)
+                add_log("ERROR: No EPUB path available. Please upload the EPUB in the 'Book Source' field above.")
+                yield 0, "Error: Upload EPUB first.", "\n".join(log), gr.update(interactive=True), gr.update(visible=False)
                 return
 
             parser = EPUBParser(epub_path)
