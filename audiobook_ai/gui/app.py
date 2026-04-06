@@ -380,7 +380,7 @@ class AudiobookGUI:
 
                 res_path = engine.design_voice(
                     text=f"Bonjour, je suis {char_name}.",
-                    instruction=desc,
+                    instruct=desc,
                     language="french",
                     output_path=out_path
                 )
@@ -504,7 +504,7 @@ class AudiobookGUI:
                         ref_audio_path=ref_audio, # TODO: Need ref_text!
                         ref_text="", # TODO: Need to provide the text spoken in ref_audio
                         language="french",
-                        emotion_instruction=emotion_instr,
+                        emotion_instruct=emotion_instr,
                         output_path=out_path
                     )
                     
