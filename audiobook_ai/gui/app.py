@@ -135,6 +135,18 @@ class AudiobookGUI:
                         # --- NARRATOR ---
                         with gr.Column(scale=1):
                             with gr.Group():
+                                gr.Markdown("#### Voice Strategy")
+                                voice_strategy_radio = gr.Radio(
+                                    choices=[
+                                        ("Single Narrator Mode (Voice Acting)", "single_narrator"),
+                                        ("Full Ensemble Cast (Multi-Voice)", "full_ensemble")
+                                    ],
+                                    value="single_narrator",
+                                    label="Production Mode"
+                                )
+                                gr.Markdown("* **Single Narrator**: Uses the narrator voice for ALL characters, but applies the detected emotions (e.g. angry, sad) for acting. Good for traditional audiobooks.*")
+                                gr.Markdown("* **Full Ensemble**: Uses the specific voice designed for each character. Good for radio-play styles.*")
+                                
                                 gr.Markdown("#### Narrator Voice")
                                 txt_narrator_desc = gr.Textbox(
                                     label="Voice Description", 
@@ -188,6 +200,12 @@ class AudiobookGUI:
                     self._df_chars_ref = df_char_voices
                     self._md_char_info_ref = md_char_info
 
+                    voice_strategy_radio.change(
+                        fn=lambda v: setattr(self, 'voice_strategy', v),
+                        inputs=[voice_strategy_radio],
+                        outputs=[]
+                    )
+                    self.voice_strategy = "single_narrator"
                 # ==========================
                 # TAB 3: PRODUCTION
                 # ==========================
@@ -587,10 +605,18 @@ class AudiobookGUI:
                 if char_name not in self._characters and char_name != "Narrator":
                      char_name = "Narrator" # Default to narrator voice
                 
-                # Determine Reference Audio
-                ref_audio = self.narrator_wav_path # Default
-                if char_name != "Narrator" and char_name in self.character_voice_paths:
-                    ref_audio = self.character_voice_paths[char_name]
+                # Determine Reference Audio based on Strategy
+                # Check strategy: single_narrator or full_ensemble
+                strategy = getattr(self, 'voice_strategy', 'single_narrator')
+                
+                if strategy == "single_narrator":
+                    # Force Narrator voice regardless of character
+                    ref_audio = self.narrator_wav_path
+                else:
+                    # Full Ensemble mode
+                    ref_audio = self.narrator_wav_path # Default fallback
+                    if char_name != "Narrator" and char_name in self.character_voice_paths:
+                        ref_audio = self.character_voice_paths[char_name]
                 
                 if not ref_audio:
                     self._log(f"Skipping {seg_id}: No reference audio for {char_name}")
