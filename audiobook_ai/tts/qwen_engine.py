@@ -72,12 +72,12 @@ class TTSEngine:
             raise RuntimeError("Model not loaded. Run load_model() first.")
 
         try:
-            logger.info(f"Designing voice: [{instruction}]")
+            logger.info(f"Designing voice: [{instruct}]")
             
             # Syntax: model.generate_voice_design(text, instruct, language) -> (audio_list, sr)
             audio_list, sample_rate = self.model.generate_voice_design(
                 text=text,
-                instruct=instruction,
+                instruct=instruct,
                 language=language,
             )
             
