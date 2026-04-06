@@ -38,13 +38,9 @@ class TTSEngine:
             # Determine torch dtype
             dtype = torch.bfloat16 if self.dtype == "bfloat16" else torch.float16
 
-            self.model = Qwen3TTSModel.from_pretrained(
-                model_path,
-                device_map=device,
-                dtype=dtype,
-                # attn_implementation removed to prevent crash if flash_attn is missing.
-                # PyTorch SDPA will be used automatically.
-            )
+            # Use ONLY model_path. 
+            # Wrapper models often crash if given 'device_map' or 'dtype' which they don't handle.
+            self.model = Qwen3TTSModel.from_pretrained(model_path)
             self.model_name = model_path
             logger.info(f"Model loaded: {model_path}")
 
