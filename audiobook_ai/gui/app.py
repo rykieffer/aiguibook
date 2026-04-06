@@ -27,6 +27,7 @@ class AudiobookGUI:
         self.app = None
         
         self.parser = None
+        self._last_epub_path = None
         self.analyzer = None
         self.segments = []
         self.tags = {}
@@ -319,13 +320,248 @@ class AudiobookGUI:
         return None
 
     def start_generation(self, preview_mode, val_mode, state):
-        # Generator: outputs=[progress, phase, logs, btn1, btn2]
-        yield 0, "Initializing...", "Starting...", gr.update(interactive=False), gr.update(visible=True)
+        """Full audiobook generation pipeline with verbose logging."""
         import time
-        time.sleep(1)
-        yield 50, "Generating...", "Log entry 1...", gr.update(visible=False), gr.update(visible=False)
-        time.sleep(1)
-        yield 100, "Done.", "Log entry 2...", gr.update(interactive=True), gr.update(visible=False)
+        import threading
+
+        # Initialize TTS engine from config
+        from audiobook_ai.tts.qwen_engine import TTSEngine
+        from audiobook_ai.core.epub_parser import EPUBParser
+        from audiobook_ai.core.text_segmenter import TextSegmenter
+        from audiobook_ai.audio.validation import WhisperValidator
+        from audiobook_ai.audio.assembly import AudioAssembly
+
+        self._gen_running = True
+        self._gen_cancelled = False
+        self._gen_paused = False
+
+        log = []
+        def add_log(msg):
+            log.append("[%s] %s" % (time.strftime("%H:%M:%S"), msg))
+            self._log(msg)
+
+        yield 0, "Starting...", "\n".join(log), gr.update(interactive=False), gr.update(visible=True)
+
+        try:
+            # Check state
+            if not state.get("analyzed") and not state.get("tags"):
+                yield 0, "Error: No analysis data. Run analysis first.", "\n".join(log), gr.update(interactive=True), gr.update(visible=False)
+                return
+
+            add_log("Generation started")
+            yield 5, "Loading analysis data...", "\n".join(log), gr.update(visible=False), gr.update(visible=False)
+
+            # 1. Get tags and dedup map
+            tags = state.get("tags", {})
+            chars = state.get("chars", [])
+            dedup_map = state.get("dedup_map", {})
+
+            # Convert dict tags to SpeechTag objects
+            from audiobook_ai.analysis.character_analyzer import SpeechTag
+            self.tags = {}
+            for sid, t in tags.items():
+                speaker = t.get("speaker", "narrator")
+                char_name = t.get("char")
+                emo = t.get("emotion", "neutral")
+                # Map emotion instruction
+                from audiobook_ai.analysis.character_analyzer import EMOTION_INSTRUCTIONS_FR
+                instr = EMOTION_INSTRUCTIONS_FR.get(emo, EMOTION_INSTRUCTIONS_FR["neutral"])
+                self.tags[sid] = SpeechTag(
+                    segment_id=sid, speaker_type=speaker, character_name=char_name,
+                    emotion=emo, voice_id="narrator", emotion_instruction=instr,
+                )
+
+            add_log("Loaded %d segment tags, %d characters" % (len(self.tags), len(chars)))
+            yield 10, "Analysis loaded", "\n".join(log), gr.update(visible=False), gr.update(visible=False)
+
+            # 2. Load the EPUB and re-segment
+            add_log("Loading EPUB for text extraction...")
+            yield 15, "Re-loading EPUB...", "\n".join(log), gr.update(visible=False), gr.update(visible=False)
+
+            epub_path = self._last_epub_path if hasattr(self, '_last_epub_path') else None
+            if not epub_path:
+                add_log("ERROR: No EPUB path available. Please re-parse the book.")
+                yield 0, "Error: Re-parse book first.", "\n".join(log), gr.update(interactive=True), gr.update(visible=False)
+                return
+
+            parser = EPUBParser(epub_path)
+            parser.parse()
+            add_log("EPUB parsed: %d chapters" % len(parser._chapters))
+
+            seg = TextSegmenter(max_words=150, min_words=20)
+            chapters_with_text = {}  # {chapter_idx: [TextSegment, ...]}
+            total_segments = 0
+
+            for ch in parser._chapters:
+                idx = getattr(ch, 'spine_order', 0)
+                text = getattr(ch, 'text', '')
+                title = getattr(ch, 'title', 'Chapter %d' % (idx+1))
+                segs = seg.segment_chapter(text, title, idx)
+                if segs:
+                    chapters_with_text[idx] = segs
+                    total_segments += len(segs)
+
+            add_log("Book segmented into %d audio segments" % total_segments)
+            yield 20, "Segmented: %d segments" % total_segments, "\n".join(log), gr.update(visible=False), gr.update(visible=False)
+
+            # 3. Initialize Qwen3-TTS engine
+            add_log("Initializing Qwen3-TTS engine...")
+            add_log("NOTE: If model not cached, it will download (this may take several minutes)")
+            yield 25, "Initializing TTS engine...", "\n".join(log), gr.update(visible=False), gr.update(visible=False)
+
+            tts_config = self.config.get_section("tts")
+            self.tts_engine = TTSEngine(
+                model_path=tts_config.get("model", "Qwen/Qwen3-TTS-12Hz-1.7B-Base"),
+                device=tts_config.get("device", "cuda"),
+                dtype=tts_config.get("dtype", "bfloat16"),
+                batch_size=tts_config.get("batch_size", 4),
+            )
+
+            def tts_progress(pct, status):
+                add_log("  TTS: %s" % status)
+
+            self.tts_engine.initialize()
+            add_log("Qwen3-TTS engine initialized successfully")
+            yield 30, "TTS Ready", "\n".join(log), gr.update(visible=False), gr.update(visible=False)
+
+            # 4. Setup output directory
+            work_dir = os.path.join("/tmp", "aiguibook_gen")
+            output_dir = os.path.join(os.path.expanduser("~"), "audiobooks")
+            os.makedirs(work_dir, exist_ok=True)
+            os.makedirs(output_dir, exist_ok=True)
+
+            # Create book project
+            from audiobook_ai.core.project import BookProject
+            book_title = parser._metadata.get("title", "Untitled")
+            self._project = BookProject(
+                book_title=book_title, work_dir=work_dir, output_dir=output_dir,
+            )
+            self._project.create()
+            self._project.book_metadata = parser._metadata
+            self._project.total_chapters = len(parser._chapters)
+
+            # 5. Generate audio per segment
+            add_log("Starting audio generation for %d segments..." % total_segments)
+            generated_count = 0
+            failed_count = 0
+            start_time = time.time()
+            seg_audio_paths = {}  # {chapter_idx: [(seg_path, seg_text, seg_tag), ...]}
+
+            # Limit to preview mode if requested
+            chapter_indices = sorted(chapters_with_text.keys())
+            if preview_mode:
+                chapter_indices = chapter_indices[:3]
+                total_to_gen = sum(len(chapters_with_text[i]) for i in chapter_indices)
+                add_log("PREVIEW MODE: Limiting to first %d chapters (%d segments)" % (len(chapter_indices), total_to_gen))
+            else:
+                total_to_gen = total_segments
+
+            for ch_idx in chapter_indices:
+                segs = chapters_with_text[ch_idx]
+                ch_title = getattr(next((c for c in parser._chapters if getattr(c, 'spine_order', 0) == ch_idx), None), 'title', 'Chapter %d' % (ch_idx+1))
+                add_log("=== Chapter %d: %s (%d segments) ===" % (ch_idx+1, ch_title, len(segs)))
+
+                ch_audio_dir = os.path.join(self._project.segments_dir, str(ch_idx))
+                os.makedirs(ch_audio_dir, exist_ok=True)
+
+                for si, seg_obj in enumerate(segs):
+                    if self._gen_cancelled:
+                        add_log("Generation cancelled by user")
+                        yield generated_count/total_to_gen*100, "Cancelled", "\n".join(log), gr.update(interactive=True), gr.update(visible=False)
+                        return
+
+                    while self._gen_paused:
+                        time.sleep(0.5)
+                        if self._gen_cancelled:
+                            return
+
+                    seg_id = seg_obj.id
+                    tag = self.tags.get(seg_id)
+                    emotion = tag.emotion if tag else "neutral"
+                    instr = tag.emotion_instruction if tag else "Parlez d'un ton neutre et naturel"
+
+                    add_log("  [%d/%d] %s (emotion: %s)" % (generated_count+1, total_to_gen, seg_id, emotion))
+
+                    # Output path
+                    out_path = os.path.join(ch_audio_dir, "%s.wav" % seg_id)
+
+                    try:
+                        audio_path, dur = self.tts_engine.generate(
+                            text=seg_obj.text,
+                            language="French",
+                            emotion_instruction=instr,
+                            output_path=out_path,
+                            progress_callback=tts_progress,
+                        )
+                        if audio_path and os.path.exists(audio_path):
+                            seg_audio_paths.setdefault(ch_idx, []).append((audio_path, seg_obj.text, tag))
+                            generated_count += 1
+                            self._project.set_segment_status(seg_id, "generated", {"duration": dur, "path": audio_path})
+                            add_log("    -> Generated: %.1fs" % dur)
+                        else:
+                            add_log("    -> FAILED: no output")
+                            failed_count += 1
+                    except Exception as e:
+                        add_log("    -> ERROR: %s" % e)
+                        failed_count += 1
+
+                    # Update progress
+                    pct = 30 + (generated_count / total_to_gen * 50)
+                    elapsed = time.time() - start_time
+                    if generated_count > 0:
+                        avg = elapsed / generated_count
+                        remaining = avg * (total_to_gen - generated_count)
+                        eta = "%02d:%02d remaining" % (remaining/60, remaining%60)
+                    else:
+                        eta = "calculating..."
+
+                    yield pct, "Generating Ch%d: %d/%d (%s)" % (ch_idx+1, generated_count, total_to_gen, eta), "\n".join(log), gr.update(visible=False), gr.update(visible=False)
+
+            add_log("Generation phase complete. Generated: %d, Failed: %d" % (generated_count, failed_count))
+
+            if generated_count == 0:
+                yield 0, "Error: No segments generated. Check TTS setup.", "\n".join(log), gr.update(interactive=True), gr.update(visible=False)
+                return
+
+            yield 85, "Generation done, assembling audiobook...", "\n".join(log), gr.update(visible=False), gr.update(visible=False)
+
+            # 6. Assembly
+            add_log("Assembling final audiobook...")
+            from audiobook_ai.audio.assembly import AudioAssembly
+            assembly = AudioAssembly(self._project, self.config)
+
+            # Map chapter indices to titles
+            ch_titles = {}
+            for ch in parser._chapters:
+                idx = getattr(ch, 'spine_order', 0)
+                ch_titles[idx] = getattr(ch, 'title', 'Chapter %d' % (idx+1))
+
+            try:
+                if preview_mode:
+                    # Only assembly selected chapters
+                    filtered_chapters_with_text = {i: chapters_with_text[i] for i in chapter_indices}
+                    output_path = assembly.assemble_full_m4b(
+                        chapter_paths={i: None for i in chapter_indices},  # Will be auto-scanned
+                        chapter_titles=ch_titles,
+                    )
+                else:
+                    output_path = assembly.assemble_full_m4b(chapter_titles=ch_titles)
+
+                add_log("FINAL OUTPUT: %s" % output_path)
+                yield 100, "COMPLETE! Output: %s" % os.path.basename(output_path), "\n".join(log), gr.update(interactive=True), gr.update(visible=False)
+
+            except Exception as e:
+                add_log("ASSEMBLY ERROR: %s" % e)
+                import traceback
+                add_log(traceback.format_exc())
+                yield 90, "Assembly error: %s" % e, "\n".join(log), gr.update(interactive=True), gr.update(visible=False)
+
+        except Exception as e:
+            import traceback
+            tb = traceback.format_exc()
+            add_log("FATAL ERROR: %s" % e)
+            add_log(tb)
+            yield 0, "Error: %s" % e, "\n".join(log), gr.update(interactive=True), gr.update(visible=False)
 
     def test_llm(self, url):
         try:
