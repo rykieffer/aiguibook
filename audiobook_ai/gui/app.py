@@ -550,7 +550,7 @@ class AudiobookGUI:
             
             out_path = os.path.join(tempfile.gettempdir(), "narrator_voice.wav")
             # Simple test text
-            test_text = "Bonjour, ceci est le test de la voix du narrateur."
+            test_text = "Bonjour et bienvenue. Je suis votre narrateur pour ce livre. Je vais vous guider à travers chaque chapitre avec une voix claire et expressive, en adaptant le ton selon les scènes et les émotions du récit."
             
             res_path = engine.design_voice(
                 text=test_text,
@@ -609,7 +609,7 @@ class AudiobookGUI:
 
                 # Generate
                 # Use a generic sentence
-                text = f"Bonjour, je suis {char_name}."
+                text = f"Bonjour, ici {char_name}. Je suis l'un des personnages principaux de cette histoire. À travers les dialogues et les scènes, je partagerai mes émotions, mes pensées et mes aventures avec vous. Bonne écoute."
                 
                 res_path = engine.design_voice(
                     text=text,
