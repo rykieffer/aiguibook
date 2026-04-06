@@ -527,6 +527,111 @@ class AudiobookGUI:
             self._log(f"Fatal Error: {e}")
             yield 0, f"Error: {e}", self._get_logs(), gr.update(interactive=True), gr.update(visible=False), None
 
+
+    # ==========================
+    # VOICE DESIGN METHODS
+    # ==========================
+    def design_narrator(self, desc_text, ref_wav):
+        """
+        Design the narrator voice.
+        If ref_wav is provided, use it. Otherwise use Description.
+        """
+        self.narrator_voice_desc = desc_text
+        
+        # If user uploaded a file, use it
+        if ref_wav:
+            self.narrator_wav_path = ref_wav
+            return f"Using uploaded file", ref_wav
+
+        engine = self._get_engine()
+        try:
+            # Load VoiceDesign Model
+            engine.load_model(self._voice_model_variant_design)
+            
+            out_path = os.path.join(tempfile.gettempdir(), "narrator_voice.wav")
+            # Simple test text
+            test_text = "Bonjour, ceci est le test de la voix du narrateur."
+            
+            res_path = engine.design_voice(
+                text=test_text,
+                instruct=self.narrator_voice_desc,
+                language="french",
+                output_path=out_path
+            )
+            
+            if res_path:
+                self.narrator_wav_path = res_path
+                # Unload Design model
+                engine.unload_model()
+                return f"Voice designed successfully!", res_path
+            else:
+                engine.unload_model()
+                return "Voice design failed.", None
+        except Exception as e:
+            engine.unload_model()
+            return f"Error: {e}", None
+
+    def design_all_characters(self, global_desc, state):
+        """
+        Design voices for all detected characters.
+        """
+        if not state.get("analyzed"):
+            return "Run Analysis first.", []
+        
+        chars = self._characters
+        # Remove duplicates if any
+        chars = list(set([c for c in chars if c]))
+        
+        engine = self._get_engine()
+        status_msgs = []
+        
+        try:
+            engine.load_model(self._voice_model_variant_design) # Load VoiceDesign model
+            
+            df_data = []
+            for char_name in chars:
+                if char_name == "Narrator": 
+                    df_data.append([char_name, "Use Narrator", "Done"])
+                    continue
+                
+                # Use global description or specific if available in future
+                desc = global_desc 
+                if not desc:
+                    desc = f"A voice for {char_name}."
+                
+                self._log(f"Designing voice for: {char_name}")
+                out_path = os.path.join(tempfile.gettempdir(), f"char_{char_name.replace(' ', '_')}.wav")
+                
+                # Skip if already exists (optimization)
+                if os.path.exists(out_path) and char_name in self.character_voice_paths:
+                     df_data.append([char_name, "Already exists", "Done"])
+                     continue
+
+                # Generate
+                # Use a generic sentence
+                text = f"Bonjour, je suis {char_name}."
+                
+                res_path = engine.design_voice(
+                    text=text,
+                    instruct=desc,
+                    language="french",
+                    output_path=out_path
+                )
+                
+                if res_path:
+                    self.character_voice_paths[char_name] = res_path
+                    df_data.append([char_name, "Generated", "Done"])
+                else:
+                    df_data.append([char_name, "Failed", "Error"])
+            
+            engine.unload_model()
+            status = f"Finished processing {len(chars)} characters."
+            return status, df_data
+            
+        except Exception as e:
+            engine.unload_model()
+            return f"Batch design error: {e}", []
+
     def launch(self, port=7860, share=False, server_name="0.0.0.0"):
         if self.app is None: self.build()
         self.app.queue()
