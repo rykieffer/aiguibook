@@ -40,7 +40,17 @@ class TTSEngine:
 
             # Use ONLY model_path. 
             # Wrapper models often crash if given 'device_map' or 'dtype' which they don't handle.
-            self.model = Qwen3TTSModel.from_pretrained(model_path)
+                        # Force GPU usage
+            try:
+                self.model = Qwen3TTSModel.from_pretrained(
+                    model_path,
+                    device_map="cuda:0",
+                    dtype=torch.bfloat16,
+                )
+                logger.info(f"Model loaded on GPU with bfloat16")
+            except Exception as e:
+                logger.warning(f"Failed to load with device_map: {e}. Falling back to default.")
+                self.model = Qwen3TTSModel.from_pretrained(model_path)
             self.model_name = model_path
             logger.info(f"Model loaded: {model_path}")
 
