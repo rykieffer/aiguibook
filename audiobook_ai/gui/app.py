@@ -110,8 +110,8 @@ class AudiobookGUI:
                             btn_load_json = gr.Button("Load JSON")
                             status_load = gr.Textbox(label="Load Status")
 
-                    file_epub.change(fn=self.parse_epub, inputs=[file_epub], outputs=[book_info, char_list_df, state])
-                    btn_parse.click(fn=self.parse_epub, inputs=[file_epub], outputs=[book_info, char_list_df, state])
+                    file_epub.change(fn=self.parse_epub, inputs=[file_epub, state], outputs=[book_info, char_list_df, state])
+                    btn_parse.click(fn=self.parse_epub, inputs=[file_epub, state], outputs=[book_info, char_list_df, state])
                     btn_analyze.click(
                         fn=self.run_analysis, inputs=[file_epub, state],
                         outputs=[status_bar, char_list_df, state]
@@ -225,9 +225,12 @@ class AudiobookGUI:
         return self.app
 
     # --- Tab 1 Handlers ---
-    def parse_epub(self, file_epub):
+    def parse_epub(self, file_epub, state):
+        # Ensure state exists
+        if not state: state = {}
+        
         if not file_epub:
-            return "No file selected.", {}, {"parsed": False, "analyzed": False}
+            return "No file selected.", [], state
         
         self._log(f"Parsing EPUB: {os.path.basename(file_epub)}")
         try:
@@ -238,12 +241,20 @@ class AudiobookGUI:
             self._chapters_list = data.get("chapters", [])
             meta = data.get("metadata", {})
             
+            # UPDATE STATE: Don't create a new one!
+            state["parsed"] = True
+            state["epub_path"] = file_epub  # Save path for Tab 3
+            state["meta"] = meta
+            
+            # Don't wipe analyzed status if it was already true
+            if "analyzed" not in state: state["analyzed"] = False
+            
             info = f"Title: {meta.get('title', '?')}\nAuthor: {meta.get('author', '?')}\nChapters: {len(self._chapters_list)}"
             self._log(f"Parsed {info}")
-            return info, [], {"parsed": True, "analyzed": False}
+            return info, [], state
         except Exception as e:
             self._log(f"Parse Error: {e}")
-            return f"Error: {e}", {}, {"parsed": False, "analyzed": False}
+            return f"Error: {e}", [], state
 
     def run_analysis(self, file_epub, state):
         if not self._epub_parser and not file_epub:
@@ -280,6 +291,7 @@ class AudiobookGUI:
         return f"Saved to {path}"
 
     def load_analysis_json(self, file_load_json, state):
+        if not state: state = {}
         try:
             import json
             
