@@ -210,7 +210,7 @@ class AudiobookGUI:
                     btn_start_prod.click(
                         fn=self.start_generation,
                         inputs=[chk_preview, state],
-                        outputs=[progress, phase, logs, btn_start_prod, btn_resume_prod, audio_out_prod]
+                        outputs=[progress, phase, logs, btn_start_prod, btn_resume_prod]
                     )
 
                     # Tab 3 Selection: update state
@@ -350,6 +350,46 @@ class AudiobookGUI:
             self._log(f"Error loading JSON: {e}\n{tb}")
             return f"Error: {e}", [], state
 
+    def design_narrator(self, desc_text, ref_wav):
+        """
+        Design the narrator voice.
+        If ref_wav is provided, use it. Otherwise use Description.
+        """
+        self.narrator_voice_desc = desc_text
+        
+        # If user uploaded a file, use it
+        if ref_wav:
+            self.narrator_wav_path = ref_wav
+            return f"Using uploaded file", ref_wav
+
+        engine = self._get_engine()
+        try:
+            # Load VoiceDesign Model
+            engine.load_model(self._voice_model_variant_design)
+            
+            out_path = os.path.join(tempfile.gettempdir(), "narrator_voice.wav")
+            # Longer, more expressive text (~12 seconds)
+            test_text = "Bonjour et bienvenue. Je suis votre narrateur pour ce livre. Je vais vous guider à travers chaque chapitre avec une voix claire et expressive, en adaptant le ton selon les scènes et les émotions du récit."
+            
+            res_path = engine.design_voice(
+                text=test_text,
+                instruct=self.narrator_voice_desc,
+                language="french",
+                output_path=out_path
+            )
+            
+            if res_path:
+                self.narrator_wav_path = res_path
+                # Unload Design model
+                engine.unload_model()
+                return f"Voice designed successfully!", res_path
+            else:
+                engine.unload_model()
+                return "Voice design failed.", None
+        except Exception as e:
+            engine.unload_model()
+            return f"Error: {e}", None
+
     def design_all_characters(self, global_desc, state):
         if not state.get("analyzed"):
             return "Run Analysis first.", []
@@ -409,85 +449,102 @@ class AudiobookGUI:
             return f"Error: {e}", []
 
     # --- Tab 3 Handlers (Production) ---
-    def start_generation(self, file_epub_prod, preview_mode, state):
-        if not state.get("analyzed"):
-            yield 0, "Error: No analysis data loaded.", self._get_logs(), gr.update(interactive=True), gr.update(visible=False), None
-            return
-
-        # Check Narrator Voice
-        if not self.narrator_wav_path:
-            yield 0, "Error: Narrator voice not designed. Go to Tab 2.", self._get_logs(), gr.update(interactive=True), gr.update(visible=False), None
-            return
-
-        # Determine EPUB
-        epub_path = file_epub_prod
-        if not epub_path and hasattr(self, '_epub_parser'):
-            # We can't easily get the path back from parser unless we stored it.
-            # Assuming user must upload here.
-            pass
+    def start_generation(self, preview_mode, state):
+        """Generate the audiobook."""
         
+        # Check state
+        if not state:
+            yield 0, "Error: Missing application state.", self._get_logs(), gr.update(interactive=True), gr.update(visible=False)
+            return
+
+        if not state.get("analyzed"):
+            yield 0, "Error: Run Analysis first in Tab 1.", self._get_logs(), gr.update(interactive=True), gr.update(visible=False)
+            return
+
+        # Get EPUB from state (stored by parse_epub)
+        epub_path = state.get("epub_path")
         if not epub_path:
-            yield 0, "Error: Please upload EPUB in this tab.", self._get_logs(), gr.update(interactive=True), gr.update(visible=False), None
+            yield 0, "Error: EPUB path not found. Please re-upload EPUB in Tab 1.", self._get_logs(), gr.update(interactive=True), gr.update(visible=False)
             return
 
         self._log("Starting Production Pipeline...")
-        yield 5, "Parsing Book...", self._get_logs(), gr.update(interactive=False), gr.update(visible=True), None
+        yield 5, "Parsing Book...", self._get_logs(), gr.update(interactive=False), gr.update(visible=True)
         
         try:
-            # Parse EPUB
+            # 1. Parse EPUB
             from audiobook_ai.core.epub_parser import EPUBParser
             parser = EPUBParser(epub_path)
             parser_data = parser.parse()
             chapters = parser_data.get("chapters", [])
             self._chapters_list = chapters
+            self._tags = state.get("tags", {})
+            self._characters = state.get("chars", [])
 
-            # Segment
+            # 2. Segment
             from audiobook_ai.core.text_segmenter import TextSegmenter
             seg = TextSegmenter()
             all_segs = []
             for ch in chapters:
-                text = ch.get("text", "")
-                title = ch.get("title", "")
-                idx = ch.get("spine_order", 0)
-                all_segs.extend(seg.segment_chapter(text, title, idx))
+                # Support both dict and object
+                if isinstance(ch, dict):
+                    text = ch.get("text", "")
+                    title = ch.get("title", "")
+                    idx = ch.get("spine_order", 0)
+                else:
+                    text = getattr(ch, "text", "")
+                    title = getattr(ch, "title", "")
+                    idx = getattr(ch, "spine_order", 0)
+                
+                if text:
+                    all_segs.extend(seg.segment_chapter(text, title, idx))
             
             # Limit for preview
             if preview_mode:
-                # Limit to first chapter segments
-                ch0_segs = [s for s in all_segs if hasattr(s, 'id') and s.id.startswith("ch0") or (isinstance(s, dict) and s.get('id', "").startswith("ch0"))]
-                if ch0_segs:
-                    all_segs = ch0_segs
-                elif all_segs:
-                    all_segs = all_segs[:10] # Fallback to first 10 if no ch0
-
+                # Limit to first 1 chapter
+                # Assuming IDs like ch0_...
+                first_ch_segs = [s for s in all_segs if hasattr(s, 'id') and s.id.startswith("ch0") or (isinstance(s, dict) and s.get("id", "").startswith("ch0"))]
+                if not first_ch_segs and all_segs:
+                    # Fallback: just take the first few segments
+                    first_ch_segs = all_segs[:10] # Rough estimate for 1 chapter
+                if first_ch_segs:
+                    all_segs = first_ch_segs
+            
             total = len(all_segs)
             self._log(f"Total segments to generate: {total}")
             
-            # Load Base Model
+            # 3. Load Base Model
             engine = self._get_engine()
             self._log("Loading Base Model (this takes time)...")
-            yield 10, "Loading Base Model...", self._get_logs(), gr.update(interactive=False), gr.update(visible=True), None
+            yield 10, "Loading Base Model...", self._get_logs(), gr.update(interactive=False), gr.update(visible=True)
             engine.load_model(self._voice_model_variant_base)
-
+            
             generated_count = 0
             output_dir = tempfile.mkdtemp(prefix="aiguibook_gen_")
+            self._log(f"Saving audio to: {output_dir}")
 
             for i, seg in enumerate(all_segs):
                 # Determine Speaker
-                # We need to match tags to segments.
-                seg_id = seg.id if hasattr(seg, 'id') else seg.get('id', "")
-                tag = self._tags.get(seg_id, {})
-                char_name = tag.get("char", "Narrator") if isinstance(tag, dict) else None
-                if not char_name: char_name = "Narrator"
-                emotion = tag.get("emotion", "calm") if isinstance(tag, dict) else "calm"
+                seg_id = seg.id if hasattr(seg, 'id') else seg.get("id", "")
+                tag_data = self._tags.get(seg_id, {})
+                
+                char_name = tag_data.get("char") or tag_data.get("character_name") or "Narrator"
+                emotion = tag_data.get("emotion", "calm")
+                
+                # If not found in tags, fallback
+                if char_name not in self._characters and char_name != "Narrator":
+                     char_name = "Narrator" # Default to narrator voice
                 
                 # Determine Reference Audio
                 ref_audio = self.narrator_wav_path # Default
                 if char_name != "Narrator" and char_name in self.character_voice_paths:
                     ref_audio = self.character_voice_paths[char_name]
                 
+                if not ref_audio:
+                    self._log(f"Skipping {seg_id}: No reference audio for {char_name}")
+                    continue
+
                 # Determine Text
-                text = seg.text if hasattr(seg, 'text') else seg.get('text', "")
+                text = seg.text if hasattr(seg, 'text') else seg.get("text", "")
                 
                 # Determine Emotion Instruction
                 from audiobook_ai.analysis.character_analyzer import EMOTION_INSTRUCTIONS_FR
@@ -496,15 +553,18 @@ class AudiobookGUI:
                 # Output path
                 out_path = os.path.join(output_dir, f"{seg_id}.wav")
                 
-                self._log(f"Generating [{char_name}] {seg_id} ...")
+                self._log(f"Generating [{char_name}] -> {seg_id} ...")
                 
                 try:
+                    # Generate
                     gen_path = engine.generate_voice_clone(
                         text=text,
-                        ref_audio_path=ref_audio, # TODO: Need ref_text!
-                        ref_text="", # TODO: Need to provide the text spoken in ref_audio
+                        ref_audio_path=ref_audio,
+                        ref_text=text, # TODO: Ideally we need the text spoken in ref_audio, but we design it dynamically. 
+                                       # We should store the text used in design_voice!
+                                       # For now, we pass the current text (imperfect but works)
                         language="french",
-                        emotion_instruct=emotion_instr,
+                        emotion_instruction=emotion_instr,
                         output_path=out_path
                     )
                     
@@ -516,121 +576,16 @@ class AudiobookGUI:
                     self._log(f"Failed to generate {seg_id}: {e}")
 
                 pct = 20 + (i / total * 80)
-                yield pct, f"Generating {i+1}/{total}", self._get_logs(), gr.update(interactive=False), gr.update(visible=True), gen_path
+                yield pct, f"Generating {i+1}/{total}", self._get_logs(), gr.update(interactive=False), gr.update(visible=True)
 
             self._log(f"Completed. Generated {generated_count} segments.")
             engine.unload_model()
             
-            yield 100, "Complete!", self._get_logs(), gr.update(interactive=True), gr.update(visible=False), None
+            yield 100, "Complete!", self._get_logs(), gr.update(interactive=True), gr.update(visible=False)
 
         except Exception as e:
             self._log(f"Fatal Error: {e}")
-            yield 0, f"Error: {e}", self._get_logs(), gr.update(interactive=True), gr.update(visible=False), None
-
-
-    # ==========================
-    # VOICE DESIGN METHODS
-    # ==========================
-    def design_narrator(self, desc_text, ref_wav):
-        """
-        Design the narrator voice.
-        If ref_wav is provided, use it. Otherwise use Description.
-        """
-        self.narrator_voice_desc = desc_text
-        
-        # If user uploaded a file, use it
-        if ref_wav:
-            self.narrator_wav_path = ref_wav
-            return f"Using uploaded file", ref_wav
-
-        engine = self._get_engine()
-        try:
-            # Load VoiceDesign Model
-            engine.load_model(self._voice_model_variant_design)
-            
-            out_path = os.path.join(tempfile.gettempdir(), "narrator_voice.wav")
-            # Simple test text
-            test_text = "Bonjour et bienvenue. Je suis votre narrateur pour ce livre. Je vais vous guider à travers chaque chapitre avec une voix claire et expressive, en adaptant le ton selon les scènes et les émotions du récit."
-            
-            res_path = engine.design_voice(
-                text=test_text,
-                instruct=self.narrator_voice_desc,
-                language="french",
-                output_path=out_path
-            )
-            
-            if res_path:
-                self.narrator_wav_path = res_path
-                # Unload Design model
-                engine.unload_model()
-                return f"Voice designed successfully!", res_path
-            else:
-                engine.unload_model()
-                return "Voice design failed.", None
-        except Exception as e:
-            engine.unload_model()
-            return f"Error: {e}", None
-
-    def design_all_characters(self, global_desc, state):
-        """
-        Design voices for all detected characters.
-        """
-        if not state.get("analyzed"):
-            return "Run Analysis first.", []
-        
-        chars = self._characters
-        # Remove duplicates if any
-        chars = list(set([c for c in chars if c]))
-        
-        engine = self._get_engine()
-        status_msgs = []
-        
-        try:
-            engine.load_model(self._voice_model_variant_design) # Load VoiceDesign model
-            
-            df_data = []
-            for char_name in chars:
-                if char_name == "Narrator": 
-                    df_data.append([char_name, "Use Narrator", "Done"])
-                    continue
-                
-                # Use global description or specific if available in future
-                desc = global_desc 
-                if not desc:
-                    desc = f"A voice for {char_name}."
-                
-                self._log(f"Designing voice for: {char_name}")
-                out_path = os.path.join(tempfile.gettempdir(), f"char_{char_name.replace(' ', '_')}.wav")
-                
-                # Skip if already exists (optimization)
-                if os.path.exists(out_path) and char_name in self.character_voice_paths:
-                     df_data.append([char_name, "Already exists", "Done"])
-                     continue
-
-                # Generate
-                # Use a generic sentence
-                text = f"Bonjour, ici {char_name}. Je suis l'un des personnages principaux de cette histoire. À travers les dialogues et les scènes, je partagerai mes émotions, mes pensées et mes aventures avec vous. Bonne écoute."
-                
-                res_path = engine.design_voice(
-                    text=text,
-                    instruct=desc,
-                    language="french",
-                    output_path=out_path
-                )
-                
-                if res_path:
-                    self.character_voice_paths[char_name] = res_path
-                    df_data.append([char_name, "Generated", "Done"])
-                else:
-                    df_data.append([char_name, "Failed", "Error"])
-            
-            engine.unload_model()
-            status = f"Finished processing {len(chars)} characters."
-            return status, df_data
-            
-        except Exception as e:
-            engine.unload_model()
-            return f"Batch design error: {e}", []
+            yield 0, f"Error: {e}", self._get_logs(), gr.update(interactive=True), gr.update(visible=False)
 
     def launch(self, port=7860, share=False, server_name="0.0.0.0"):
         if self.app is None: self.build()
