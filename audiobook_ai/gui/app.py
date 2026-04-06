@@ -114,7 +114,7 @@ class AudiobookGUI:
                     btn_parse.click(fn=self.parse_epub, inputs=[file_epub], outputs=[book_info, char_list_df, state])
                     btn_analyze.click(
                         fn=self.run_analysis, inputs=[file_epub, state],
-                        outputs=[status_bar, json_chars, state]
+                        outputs=[status_bar, char_list_df, state]
                     )
                     btn_save_json.click(
                         fn=self.save_analysis_json, inputs=[state], outputs=[status_save]
@@ -238,7 +238,7 @@ class AudiobookGUI:
             
             info = f"Title: {meta.get('title', '?')}\nAuthor: {meta.get('author', '?')}\nChapters: {len(self._chapters_list)}"
             self._log(f"Parsed {info}")
-            return info, {}, {"parsed": True, "analyzed": False}
+            return info, [], {"parsed": True, "analyzed": False}
         except Exception as e:
             self._log(f"Parse Error: {e}")
             return f"Error: {e}", {}, {"parsed": False, "analyzed": False}
@@ -266,7 +266,9 @@ class AudiobookGUI:
         
         state["analyzed"] = True
         self._log("Analysis complete. Found 3 characters.")
-        return "Analysis Done.", {"chars": self._characters}, state
+        # Convert to Dataframe format
+        df_data = [[char, 0, ""] for char in self._characters]
+        return "Analysis Done.", df_data, state
 
     def save_analysis_json(self, state):
         path = os.path.join(tempfile.gettempdir(), "aiguibook_analysis.json")
