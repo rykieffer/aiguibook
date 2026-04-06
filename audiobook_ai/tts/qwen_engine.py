@@ -85,7 +85,8 @@ class TTSEngine:
             logger.info(f"Designing voice: [{instruct}]")
             
             # Syntax: model.generate_voice_design(text, instruct, language) -> (audio_list, sr)
-            audio_list, sample_rate = self.model.generate_voice_design(
+            with torch.inference_mode():
+                audio_list, sample_rate = self.model.generate_voice_design(
                 text=text,
                 instruct=instruct,
                 language=language,
@@ -135,7 +136,8 @@ class TTSEngine:
             # Note: The API might take file paths or tensors. Based on typical Qwen wrappers:
             # We assume it takes paths. If it errors, we might need sf.read().
             
-            result = self.model.generate_voice_clone(
+            with torch.inference_mode():
+                result = self.model.generate_voice_clone(
                 text=full_prompt,
                 language=language,
                 ref_audio=ref_audio_path, # Check parameter name: ref_audio or ref_wavs?

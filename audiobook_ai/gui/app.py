@@ -54,6 +54,11 @@ class AudiobookGUI:
         self.character_voice_descs = {} # { "Character Name": "Voice Description" }
 
         self._log("AIGUIBook v7 initialized.")
+        # Optimization: Enable cuDNN auto-tuner for faster GPU kernels
+        try:
+            import torch
+            torch.backends.cudnn.benchmark = True
+        except: pass
         
         # Default theme/css to avoid AttributeError if launch is called before build
         import gradio as gr
@@ -654,8 +659,10 @@ class AudiobookGUI:
                 except Exception as e:
                     self._log(f"Failed to generate {seg_id}: {e}")
 
-                pct = 20 + (i / total * 80)
-                yield pct, f"Generating {i+1}/{total}", self._get_logs(), gr.update(interactive=False), gr.update(visible=True)
+                # Yield every 5 segments to reduce UI sync overhead & keep GPU fed
+                if (i + 1) % 5 == 0 or i == total - 1:
+                    pct = 20 + (i / total * 80)
+                    yield pct, f"Generating {i+1}/{total}", self._get_logs(), gr.update(interactive=False), gr.update(visible=True)
 
             self._log(f"Completed. Generated {generated_count} segments.")
             engine.unload_model()
