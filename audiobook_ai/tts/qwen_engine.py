@@ -99,7 +99,7 @@ class TTSEngine:
         ref_audio_path: str,
         ref_text: str, # The text spoken in ref_audio_path
         language: str,
-        emotion_instruct: Optional[str] = None,
+        emotion_instruction: Optional[str] = None,
         output_path: Optional[str] = None,
     ) -> Optional[str]:
         """Generate speech by cloning a voice and adding emotion.
@@ -108,8 +108,8 @@ class TTSEngine:
             raise RuntimeError("Model not loaded. Run load_model() first.")
 
         # Apply emotion instruct to text
-        if emotion_instruct:
-            full_prompt = f"{emotion_instruct}. {text}"
+        if emotion_instruction:
+            full_prompt = f"{emotion_instruction}. {text}"
         else:
             full_prompt = text
 
