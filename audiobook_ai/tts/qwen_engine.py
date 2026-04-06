@@ -42,7 +42,8 @@ class TTSEngine:
                 model_path,
                 device_map=device,
                 torch_dtype=dtype,
-                attn_implementation="flash_attention_2", # Optional, handles fallback internally
+                # attn_implementation removed to prevent crash if flash_attn is missing.
+                # PyTorch SDPA will be used automatically.
             )
             self.model.eval()
             self.model_name = model_path
