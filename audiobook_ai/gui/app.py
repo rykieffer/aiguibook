@@ -323,8 +323,34 @@ class AudiobookGUI:
             for c in chars:
                 table_data.append([c, 0, "Loaded from JSON"])
             
-            # Return: Text, List, Dict
-            return "Loaded %d characters." % len(chars), table_data, state
+            # CONVERSION STEP: Convert dict tags to SpeechTag objects
+            tags_objects = {}
+            from audiobook_ai.analysis.character_analyzer import SpeechTag, EMOTION_INSTRUCTIONS_FR
+            
+            for sid, t in tags_dict.items():
+                speaker = t.get("speaker", "narrator")
+                char_name = t.get("char")
+                emo = t.get("emotion", "neutral")
+                instr = EMOTION_INSTRUCTIONS_FR.get(emo, EMOTION_INSTRUCTIONS_FR["neutral"])
+                
+                tags_objects[sid] = SpeechTag(
+                    segment_id=sid, speaker_type=speaker, 
+                    character_name=char_name, emotion=emo, 
+                    voice_id="narrator", emotion_instruction=instr
+                )
+
+            state["tags"] = tags_objects # CRITICAL: Store objects so generation works
+            
+            # Recalculate Table Data for UI
+            table_data = []
+            for c in chars:
+                # Count tags matching this character
+                c_tags = [t for t in tags_objects.values() if t.character_name == c]
+                count = len(c_tags)
+                emos = list(set([t.emotion for t in c_tags if t.emotion]))
+                table_data.append([c, count, ", ".join(emos)])
+            
+            return "Loaded %d characters and %d tags." % (len(chars), len(tags_objects)), table_data, state
         except Exception as e:
             return f"Load Error: {e}", [], state
 
@@ -373,9 +399,19 @@ class AudiobookGUI:
             from audiobook_ai.analysis.character_analyzer import SpeechTag
             self.tags = {}
             for sid, t in tags.items():
-                speaker = t.get("speaker", "narrator")
-                char_name = t.get("char")
-                emo = t.get("emotion", "neutral")
+                # Handle both SpeechTag objects and dict (robustness)
+                if hasattr(t, 'emotion'):
+                    # It is a SpeechTag object
+                    speaker = t.speaker_type
+                    char_name = t.character_name
+                    emo = t.emotion
+                    instr = t.emotion_instruction
+                else:
+                    # It is a Dict (legacy/JSON fallback)
+                    speaker = t.get("speaker", "narrator")
+                    char_name = t.get("char")
+                    emo = t.get("emotion", "neutral")
+                    instr = EMOTION_INSTRUCTIONS_FR.get(emo, EMOTION_INSTRUCTIONS_FR["neutral"])
                 # Map emotion instruction
                 from audiobook_ai.analysis.character_analyzer import EMOTION_INSTRUCTIONS_FR
                 instr = EMOTION_INSTRUCTIONS_FR.get(emo, EMOTION_INSTRUCTIONS_FR["neutral"])
