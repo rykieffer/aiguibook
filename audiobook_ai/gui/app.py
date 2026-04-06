@@ -280,38 +280,109 @@ class AudiobookGUI:
             return f"Error: {e}", [], state
 
     def run_analysis(self, file_epub, state):
-        if not self._epub_parser and not file_epub:
-            return "Please upload an EPUB first.", {}, state
+        """Run the full character analysis pipeline with live progress."""
+        table_data = []
         
-        if not self._epub_parser:
-            res = self.parse_epub(file_epub)
-            state = res[2]
-            if not state.get("parsed"): return res[0], res[1], state
+        try:
+            # Ensure state exists
+            if not state:
+                state = {"parsed": False, "analyzed": False}
+            
+            # Parse if needed
+            if not state.get("parsed"):
+                if file_epub:
+                    info, _, state = self.parse_epub(file_epub, state)
+                    if not state.get("parsed"):
+                        yield "Parse failed.", [], state
+                        return
+                else:
+                    yield "Please upload a book first.", [], state
+                    return
+            
+            yield "Segmenting text...", [], state
+            
+            from audiobook_ai.core.text_segmenter import TextSegmenter
+            from audiobook_ai.analysis.character_analyzer import CharacterAnalyzer
+            
+            seg = TextSegmenter()
+            all_segs = []
+            chapters = self._chapters_list
+            if not chapters and self._epub_parser:
+                chapters = getattr(self._epub_parser, '_chapters', [])
+            
+            yield f"Found {len(chapters)} chapters. Segmenting...", [], state
+            
+            for ch in chapters:
+                txt = ch.get("text", "") if isinstance(ch, dict) else getattr(ch, 'text', "")
+                title = ch.get("title", "") if isinstance(ch, dict) else getattr(ch, 'title', "")
+                idx = ch.get("spine_order", 0) if isinstance(ch, dict) else getattr(ch, 'spine_order', 0)
+                if txt:
+                    all_segs.extend(seg.segment_chapter(txt, title, idx))
+            
+            if not all_segs:
+                yield "Error: No text found to analyze.", [], state
+                return
+            
+            yield f"Found {len(all_segs)} segments. Analyzing with LLM...", [], state
+            
+            self.analyzer = CharacterAnalyzer(self.config.get_section("analysis"))
+            tags, chars, _dedup_map = {}, [], {}
+            
+            # LIVE PROGRESS LOOP: Safe iteration over analyzer generator
+            for item in self.analyzer.analyze_segments_iter(all_segs):
+                if item["status"] == "progress":
+                    yield item["msg"], [], state
+                elif item["status"] == "finished":
+                    result = item["result"]
+                    tags, chars, _dedup_map = result[0], result[1], result[2]
+            
+            self.tags = tags
+            self._characters = chars
+            self.dedup_map = _dedup_map
+            state["analyzed"] = True
+            state["tags"] = tags
+            state["chars"] = chars
+            state["dedup_map"] = _dedup_map
+            
+            yield "Building results table...", [], state
+            
+            # Build Dataframe data with counts and emotions
+            for c in chars:
+                count = sum(1 for t in tags.values() if t.character_name == c)
+                emo = list(set([t.emotion for t in tags.values() if t.character_name == c]))
+                table_data.append([c, count, ", ".join(sorted(emo))])
+            
+            yield f"Analysis Complete! Found {len(chars)} characters.", table_data, state
+            
+        except Exception as e:
+            import traceback
+            self._log(f"Analysis error: {e}\n{traceback.format_exc()}")
+            yield f"Error: {e}", table_data, state
 
-        self._log("Starting Character Analysis...")
-        
-        # Simulate analysis for now to keep the script running without hanging
-        # (Actual analysis logic should be integrated here)
-        
-        # For this demo/fix, we populate some dummy data to allow Voice Design to work
-        # In the real app, this was working according to user!
-        # Let's assume it works.
-        
-        self._characters = ["Narrator", "John", "Alice"] 
-        self._tags = {"seg1": {"char": "Narrator", "emotion": "calm"}}
-        
-        state["analyzed"] = True
-        self._log("Analysis complete. Found 3 characters.")
-        # Convert to Dataframe format
-        df_data = [[char, 0, ""] for char in self._characters]
-        return "Analysis Done.", df_data, state
 
     def save_analysis_json(self, state):
-        path = os.path.join(tempfile.gettempdir(), "aiguibook_analysis.json")
-        data = {"chars": self._characters} # Simplified
-        with open(path, "w") as f:
-            json.dump(data, f)
-        return f"Saved to {path}"
+        """Save analysis to JSON for future use."""
+        if not state.get("analyzed"):
+            return "No analysis data to save. Run analysis first."
+        try:
+            tags_dict = {
+                sid: {
+                    'speaker': tag.speaker_type,
+                    'char': tag.character_name,
+                    'emotion': tag.emotion
+                }
+                for sid, tag in state.get("tags", {}).items()
+            }
+            data = {
+                "chars": state.get("chars", []),
+                "tags": tags_dict
+            }
+            path = os.path.join(tempfile.gettempdir(), "aiguibook_analysis.json")
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(data, f, indent=4)
+            return f"Saved to: {path}"
+        except Exception as e:
+            return f"Save Error: {e}"
 
     def load_analysis_json(self, file_load_json, state):
         if not state: state = {}
