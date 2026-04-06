@@ -102,7 +102,7 @@ class AudiobookGUI:
                         with gr.Column():
                             btn_analyze = gr.Button("2. Analyze Characters (LM Studio)", variant="primary")
                             status_bar = gr.Textbox(label="Status", lines=2)
-                            json_chars = gr.JSON(label="Detected Characters")
+                            char_list_df = gr.Dataframe(label="Detected Characters", headers=["Character", "Count", "Emotions"], interactive=False)
                             
                             btn_save_json = gr.Button("3. Save Analysis JSON")
                             status_save = gr.Textbox(label="Save Status")
@@ -110,10 +110,8 @@ class AudiobookGUI:
                             btn_load_json = gr.Button("Load JSON")
                             status_load = gr.Textbox(label="Load Status")
 
-                    btn_parse.click(
-                        fn=self.parse_epub, inputs=[file_epub], 
-                        outputs=[book_info, json_chars, state]
-                    )
+                    file_epub.change(fn=self.parse_epub, inputs=[file_epub], outputs=[book_info, char_list_df, state])
+                    btn_parse.click(fn=self.parse_epub, inputs=[file_epub], outputs=[book_info, char_list_df, state])
                     btn_analyze.click(
                         fn=self.run_analysis, inputs=[file_epub, state],
                         outputs=[status_bar, json_chars, state]
@@ -121,10 +119,10 @@ class AudiobookGUI:
                     btn_save_json.click(
                         fn=self.save_analysis_json, inputs=[state], outputs=[status_save]
                     )
-                    btn_load_json.click(
-                        fn=self.load_analysis_json, inputs=[file_load_json, state],
-                        outputs=[status_load, json_chars, state]
-                    )
+                    file_load_json.change(fn=self.load_analysis_json, inputs=[file_load_json, state],
+                        outputs=[status_load, char_list_df, state])
+                    btn_load_json.click(fn=self.load_analysis_json, inputs=[file_load_json, state],
+                        outputs=[status_load, char_list_df, state])
 
                 # ==========================
                 # TAB 2: VOICE DESIGN
@@ -197,7 +195,8 @@ class AudiobookGUI:
                     
                     with gr.Row():
                         with gr.Column():
-                            file_epub_prod = gr.File(label="Book Source (EPUB)", file_types=[".epub"])
+                            # file_epub_prod removed - reusing EPUB from Tab 1
+                            epub_info_box = gr.Markdown("*Loading EPUB status...*")
                             chk_preview = gr.Checkbox(label="Preview Mode (First Chapter)", value=True)
                             btn_start_prod = gr.Button("START GENERATION", variant="primary", size="lg")
                             btn_resume_prod = gr.Button("RESUME", visible=False)
@@ -210,7 +209,7 @@ class AudiobookGUI:
 
                     btn_start_prod.click(
                         fn=self.start_generation,
-                        inputs=[file_epub_prod, chk_preview, state],
+                        inputs=[chk_preview, state],
                         outputs=[progress, phase, logs, btn_start_prod, btn_resume_prod, audio_out_prod]
                     )
 
