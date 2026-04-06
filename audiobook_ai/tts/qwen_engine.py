@@ -9,6 +9,7 @@ import time
 from typing import Optional, Tuple
 
 import soundfile as sf
+import torch
 
 logger = logging.getLogger(__name__)
 
