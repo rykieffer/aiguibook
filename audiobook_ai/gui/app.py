@@ -54,6 +54,11 @@ class AudiobookGUI:
         self.character_voice_descs = {} # { "Character Name": "Voice Description" }
 
         self._log("AIGUIBook v7 initialized.")
+        
+        # Default theme/css to avoid AttributeError if launch is called before build
+        import gradio as gr
+        self.theme = gr.themes.Soft()
+        self.css = "" 
 
     def _log(self, msg):
         self._log_messages.append(f"[{time.strftime('%H:%M:%S')}] {msg}")
@@ -72,8 +77,12 @@ class AudiobookGUI:
     def build(self):
         theme = gr.themes.Soft(primary_hue="violet", secondary_hue="blue")
         css = ".log-box textarea {font-family: monospace; font-size: 12px;}"
+        
+        # Store them as instance attributes for the launch() method
+        self.theme = theme
+        self.css = css
 
-        with gr.Blocks(title="AIGUIBook", css=css, theme=theme) as self.app:
+        with gr.Blocks(title="AIGUIBook") as self.app:
             gr.Markdown("# AIGUIBook v7\n### EPUB to Audiobook with AI Voice Design (Qwen3-TTS)")
             
             state = gr.State({"loaded": False, "parsed": False, "analyzed": False})
