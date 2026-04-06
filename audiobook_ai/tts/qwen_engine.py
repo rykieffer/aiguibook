@@ -188,12 +188,11 @@ class TTSEngine:
 
                 start_time = time.time()
                 
-                # Detect the real model object (sometimes it's wrapped in .model)
-                model_obj = self._model
-                if hasattr(self._model, 'model'):
-                    model_obj = self._model.model
-                
-                result = model_obj.generate(
+                # FIX: Use self._model directly.
+                # The wrapper object handles text-to-token conversion.
+                # The inner model (self._model.model) only takes tensors (input_ids),
+                # which caused the "NoneType" error when passing text.
+                result = self._model.generate(
                     text=full_text,
                     language=language,
                     output_path=output_path,
