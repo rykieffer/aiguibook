@@ -6,157 +6,174 @@ import logging
 import os
 import tempfile
 import time
-import threading
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Optional, Tuple
 
-import torch
 import soundfile as sf
-import numpy as np
 
 logger = logging.getLogger(__name__)
 
-
 class TTSEngine:
-    """Wraps Qwen3-TTS model for local GPU inference with voice cloning support."""
+    """Engine manager for Qwen3-TTS.
+    
+    Handles loading of VoiceDesign (for creating voices) and Base (for generation).
+    """
 
-    def __init__(
-        self,
-        model_path: str = "Qwen/Qwen3-TTS-12Hz-1.7B-Base",
-        device: str = "cuda",
-        dtype: str = "bfloat16",
-        batch_size: int = 4,
-    ):
-        self.model_path = model_path
-        self.device = device
-        self.dtype_str = dtype
-        self.batch_size = batch_size
-        self._model = None
-        self._processor = None
-        self._initialized = False
-        self._lock = threading.Lock()
-        self._dtype_map = {
-            "bfloat16": torch.bfloat16,
-            "float16": torch.float16,
-            "float32": torch.float32,
-        }
+    def __init__(self):
+        self.model = None
+        self.model_name = ""
+        self.device = "cuda"
+        self.dtype = "bfloat16"  # or torch.bfloat16 logic
 
-    def initialize(self):
-        """Load the model onto the GPU with proper dtype."""
-        with self._lock:
-            if self._initialized:
+    def load_model(self, model_path: str, device: str = "cuda"):
+        """Load the specified Qwen3 model variant."""
+        try:
+            from qwen_tts import Qwen3TTSModel
+            import torch
+
+            if self.model is not None and self.model_name == model_path:
                 return
 
-            logger.info(f"Loading Qwen3-TTS model: {self.model_path}")
+            logger.info(f"Loading Qwen3 model: {model_path}")
             
-            # FIX: Use standard Transformers API instead of Qwen3TTSModel wrapper
-            # The wrapper hides the .generate() method and causes the AttributeError.
-            try:
-                from transformers import AutoModel, AutoProcessor
-                
-                torch_dtype = self._dtype_map.get(self.dtype_str, torch.bfloat16)
-                
-                logger.info("Loading Processor...")
-                self._processor = AutoProcessor.from_pretrained(self.model_path)
-                
-                logger.info("Loading Model...")
-                self._model = AutoModel.from_pretrained(
-                    self.model_path,
-                    device_map=f"{self.device}" if self.device == "cuda" else self.device,
-                    torch_dtype=torch_dtype,
-                )
-                self._model.eval()
-                
-            except ImportError:
-                raise ImportError("transformers package required. Install with: pip install transformers")
+            # Determine torch dtype
+            dtype = torch.bfloat16 if self.dtype == "bfloat16" else torch.float16
 
-            self._initialized = True
-            logger.info("Qwen3-TTS model initialized successfully (Transformers API)")
-
-    def generate(
-        self,
-        text: str,
-        language: str = "French",
-        ref_audio: Optional[str] = None,
-        ref_text: Optional[str] = None,
-        emotion_instruction: Optional[str] = None,
-        output_path: Optional[str] = None,
-        progress_callback: Optional[Callable[[float, str], None]] = None,
-    ) -> Tuple[str, float]:
-        """Generate speech from text."""
-        if not self._initialized:
-            raise RuntimeError("TTSEngine not initialized. Call initialize() first.")
-
-        if not text.strip():
-            raise ValueError("Empty text provided for generation")
-
-        full_text = text.strip()
-        if emotion_instruction:
-            # Add instruction to text if using the custom voice capability
-            full_text = f"{emotion_instruction}. {full_text}"
-
-        # Determine output path
-        if output_path is None:
-            output_path = os.path.join(
-                tempfile.gettempdir(),
-                f"aiguibook_tts_{int(time.time())}_{hash(full_text) % 10000}.wav",
+            self.model = Qwen3TTSModel.from_pretrained(
+                model_path,
+                device_map=device,
+                torch_dtype=dtype,
+                attn_implementation="flash_attention_2", # Optional, handles fallback internally
             )
-        os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
-
-        start_time = time.time()
-
-        try:
-            # FIX: Use Processor for text-to-tokens
-            inputs = self._processor(text=full_text, language=language, return_tensors="pt")
-            
-            # Move inputs to device
-            if self.device == "cuda":
-                inputs = {k: v.to(self.device) if isinstance(v, torch.Tensor) else v for k, v in inputs.items()}
-
-            logger.debug(f"Input IDs shape: {inputs.get('input_ids').shape if hasattr(inputs, 'get') else inputs.input_ids.shape}")
-
-            with torch.no_grad():
-                # Generate
-                output = self._model.generate(**inputs, max_new_tokens=4096)
-            
-            # Decode audio
-            audio_np = output.cpu().numpy().squeeze()
-            
-            # Save to WAV
-            # Assuming 24kHz for Qwen models
-            sf.write(output_path, audio_np, 24000, subtype="PCM_16")
-
-            duration = time.time() - start_time
-            
-            logger.info(f"TTS generated {len(text)} chars in {duration:.2f}s -> {output_path}")
-            return output_path, duration
+            self.model.eval()
+            self.model_name = model_path
+            logger.info(f"Model loaded: {model_path}")
 
         except Exception as e:
-            logger.error(f"TTS generation failed: {e}", exc_info=True)
-            raise RuntimeError(f"TTS generation failed: {e}") from e
+            logger.error(f"Failed to load model: {e}")
+            self.model = None
+            raise
 
-    def batch_generate(self, segments_list: List[dict], progress_callback=None) -> List[Tuple[str, float]]:
-        """Generate speech for multiple segments."""
-        results = []
-        for i, seg in enumerate(segments_list):
+    def unload_model(self):
+        """Clear VRAM."""
+        if self.model is not None:
+            import torch
+            logger.info("Unloading model to free VRAM")
+            del self.model
+            self.model = None
+            self.model_name = ""
+            torch.cuda.empty_cache()
+
+    def design_voice(
+        self, 
+        text: str, 
+        instruction: str, 
+        language: str,
+        output_path: str
+    ) -> Optional[str]:
+        """Create a voice reference WAV from text description.
+        Uses the VoiceDesign model."""
+        if self.model is None:
+            raise RuntimeError("Model not loaded. Run load_model() first.")
+
+        try:
+            logger.info(f"Designing voice: [{instruction}]")
+            
+            # Syntax: model.generate_voice_design(text, instruct, language) -> (audio_list, sr)
+            audio_list, sample_rate = self.model.generate_voice_design(
+                text=text,
+                instruct=instruction,
+                language=language,
+            )
+            
+            # audio_list is usually a list of numpy arrays
+            audio_data = audio_list[0] if isinstance(audio_list, list) else audio_list
+
+            os.makedirs(os.path.dirname(output_path), exist_ok=True)
+            sf.write(output_path, audio_data, sample_rate)
+            logger.info(f"Voice designed and saved to: {output_path}")
+            return output_path
+
+        except Exception as e:
+            logger.error(f"Voice design failed: {e}")
+            return None
+
+    def generate_voice_clone(
+        self,
+        text: str,
+        ref_audio_path: str,
+        ref_text: str, # The text spoken in ref_audio_path
+        language: str,
+        emotion_instruction: Optional[str] = None,
+        output_path: Optional[str] = None,
+    ) -> Optional[str]:
+        """Generate speech by cloning a voice and adding emotion.
+        Uses the Base model."""
+        if self.model is None:
+            raise RuntimeError("Model not loaded. Run load_model() first.")
+
+        # Apply emotion instruction to text
+        if emotion_instruction:
+            full_prompt = f"{emotion_instruction}. {text}"
+        else:
+            full_prompt = text
+
+        # Fallback output path
+        if output_path is None:
+            output_path = os.path.join(tempfile.gettempdir(), f"tts_{time.time()}.wav")
+        os.makedirs(os.path.dirname(output_path), exist_ok=True)
+
+        try:
+            logger.info(f"Cloning voice for: [{full_prompt[:30]}...]")
+            
+            # Syntax: model.generate_voice_clone(...)
+            # Note: The API might take file paths or tensors. Based on typical Qwen wrappers:
+            # We assume it takes paths. If it errors, we might need sf.read().
+            
+            result = self.model.generate_voice_clone(
+                text=full_prompt,
+                language=language,
+                ref_audio=ref_audio_path, # Check parameter name: ref_audio or ref_wavs?
+                ref_text=ref_text,
+            )
+            
+            # Handle return: could be (audio_list, sr) or just audio_data
+            if isinstance(result, tuple):
+                audio_data, sample_rate = result
+            elif hasattr(result, 'audio'): # HuggingFace style
+                audio_data = result.audio
+                sample_rate = result.sample_rate
+            elif isinstance(result, list):
+                audio_data = result[0]
+                sample_rate = 24000 # Default fallback
+            else:
+                logger.warning(f"Unknown return type from model. Output might be empty.")
+                return None
+
+            audio_data = audio_data[0] if isinstance(audio_data, list) else audio_data
+            
+            # Normalize if needed (prevent clipping)
+            import numpy as np
+            if np.max(np.abs(audio_data)) > 1.0:
+                audio_data = audio_data / np.max(np.abs(audio_data))
+
+            sf.write(output_path, audio_data, sample_rate)
+            return output_path
+
+        except Exception as e:
+            logger.error(f"Generation failed: {e}")
+            # Fallback attempt with different parameter names if needed
+            # e.g. ref_wavs instead of ref_audio
             try:
-                path, dur = self.generate(
-                    text=seg.get("text", ""),
-                    language=seg.get("language", "French"),
-                    emotion_instruction=seg.get("emotion_instruction"),
-                    output_path=seg.get("output_path"),
+                logger.info("Retrying with parameter 'ref_wavs'...")
+                audio_list, sample_rate = self.model.generate_voice_clone(
+                    text=full_prompt,
+                    language=language,
+                    ref_wavs=[sf.read(ref_audio_path)], # Pass as tensor/array
+                    ref_text=ref_text,
                 )
-                results.append((path, dur))
-            except Exception as e:
-                logger.error(f"Batch generation failed for segment {i}: {e}")
-                results.append((None, 0.0))
-        return results
-
-    def __del__(self):
-        if self._model is not None:
-            try:
-                del self._model
-                del self._processor
-                self._initialized = False
-                torch.cuda.empty_cache()
-            except:
-                pass
+                audio_data = audio_list[0]
+                sf.write(output_path, audio_data, sample_rate)
+                return output_path
+            except Exception as fallback_error:
+                logger.error(f"Fallback failed: {fallback_error}")
+                return None
