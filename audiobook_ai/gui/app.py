@@ -626,6 +626,27 @@ class AudiobookGUI:
             self._chapters_list = chapters
             self._tags = state.get("tags", {})
             self._characters = state.get("chars", [])
+            
+            # --- CRITICAL FIX: Normalize tags to dictionaries ---
+            # run_analysis() might store SpeechTag objects, which cause 
+            # 'SpeechTag object has no attribute get' errors later.
+            if self._tags:
+                # Check the first item to see type
+                first_val = next(iter(self._tags.values()), None)
+                if hasattr(first_val, 'emotion'):
+                    # It's a SpeechTag object (or similar)
+                    self._log("Normalizing tags from Objects to Dictionaries...")
+                    normalized_tags = {}
+                    for sid, tag in self._tags.items():
+                        normalized_tags[sid] = {
+                            "speaker": getattr(tag, 'speaker_type', 'narrator'),
+                            "char": getattr(tag, 'character_name', None),
+                            "emotion": getattr(tag, 'emotion', 'neutral'),
+                            "emotion_instruction": getattr(tag, 'emotion_instruction', "")
+                        }
+                    self._tags = normalized_tags
+                    self._log("Tags normalized successfully.")
+            # --- END FIX ---
 
             # 2. Segment
             from audiobook_ai.core.text_segmenter import TextSegmenter
