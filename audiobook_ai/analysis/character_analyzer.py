@@ -411,7 +411,7 @@ class CharacterAnalyzer:
                     segment_id=seg_id, speaker_type="narrator", character_name=None,
                     emotion="neutral", voice_id="narrator_male",
                     emotion_instruction=EMOTION_INSTRUCTIONS_FR["neutral"],
-                    text=seg_text,
+                    text=text,
                 )
                 all_tags[seg_id] = tag
             else:
@@ -483,7 +483,7 @@ class CharacterAnalyzer:
                 segment_id=seg_id, speaker_type="narrator", character_name=None,
                 emotion="neutral", voice_id="narrator_male",
                 emotion_instruction=EMOTION_INSTRUCTIONS_FR["neutral"],
-                    text=seg_text,
+                    text=text,
             )
 
         # Check cache
@@ -530,6 +530,7 @@ class CharacterAnalyzer:
                         "speaker_type": parsed.get("speaker_type", "narrator"),
                         "character_name": parsed.get("character_name"),
                         "emotion": parsed.get("emotion", "neutral"),
+                        "text": text,
                     })
                     self._cache[cache_key] = {"tag": parsed}
                     return tag
@@ -544,7 +545,7 @@ class CharacterAnalyzer:
             segment_id=seg_id, speaker_type="narrator", character_name=None,
             emotion="neutral", voice_id="narrator_male",
             emotion_instruction=EMOTION_INSTRUCTIONS_FR["neutral"],
-                    text=seg_text,
+                    text=text,
         )
 
     @staticmethod

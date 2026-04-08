@@ -1,4 +1,15 @@
 __pycache__/
 *.pyc
-venv/
+*.pyo
 *.egg-info/
+dist/
+build/
+.env
+*.wav
+*.mp3
+*.m4b
+work/
+output/
+voices/
+.aiguibook/
+*.epub

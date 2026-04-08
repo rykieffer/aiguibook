@@ -49,8 +49,10 @@ class AudiobookGUI:
         self._voice_model_variant_base = "Qwen/Qwen3-TTS-12Hz-1.7B-Base"
         self._engine = None # TTSEngine instance
         self.narrator_voice_desc = DEFAULT_NARRATOR_DESC
-        self.narrator_wav_path = None # Either uploaded or designed
-        self.character_voice_paths = {} # { "Character Name": "path/to/audio.wav" }
+        self.narrator_wav_path = None
+        self.narrator_ref_text = ""  # Text spoken in narrator ref audio # Either uploaded or designed
+        self.character_voice_paths = {}
+        self.character_ref_texts = {}  # {name: text spoken in ref audio} # { "Character Name": "path/to/audio.wav" }
         self.character_voice_descs = {} # { "Character Name": "Voice Description" }
 
         self._log("AIGUIBook v7 initialized.")
@@ -469,6 +471,7 @@ class AudiobookGUI:
         # If user uploaded a file, use it
         if ref_wav:
             self.narrator_wav_path = ref_wav
+            self.narrator_ref_text = desc_text  # Use description as approximate ref_text
             return f"Using uploaded file", ref_wav
 
         engine = self._get_engine()
@@ -489,6 +492,7 @@ class AudiobookGUI:
             
             if res_path:
                 self.narrator_wav_path = res_path
+                self.narrator_ref_text = test_text  # Save the text we used for the ref audio
                 # Unload Design model
                 engine.unload_model()
                 return f"Voice designed successfully!", res_path
@@ -566,8 +570,9 @@ class AudiobookGUI:
                     self._log(f"Skipping {char_name} (already exists)")
                     continue
 
+                char_test_text = f"Bonjour, je suis {char_name}. Comment allez-vous aujourd'hui? Je suis ravi de faire votre connaissance."
                 res_path = engine.design_voice(
-                    text=f"Bonjour, je suis {char_name}.",
+                    text=char_test_text,
                     instruct=desc,
                     language="french",
                     output_path=out_path
@@ -575,6 +580,7 @@ class AudiobookGUI:
                 
                 if res_path:
                     self.character_voice_paths[char_name] = res_path
+                    self.character_ref_texts[char_name] = char_test_text  # Save ref text
                     self._log(f"Voice created for {char_name}.")
             
             engine.unload_model()
@@ -733,13 +739,17 @@ class AudiobookGUI:
                 self._log(f"Generating [{char_name}] -> {seg_id} ...")
                 
                 try:
+                    # Determine ref_text: the text spoken in the reference audio
+                    if strategy == "single_narrator" or char_name == "Narrator":
+                        ref_text = self.narrator_ref_text or text
+                    else:
+                        ref_text = self.character_ref_texts.get(char_name, self.narrator_ref_text or text)
+                    
                     # Generate
                     gen_path = engine.generate_voice_clone(
                         text=text,
                         ref_audio_path=ref_audio,
-                        ref_text=text, # TODO: Ideally we need the text spoken in ref_audio, but we design it dynamically. 
-                                       # We should store the text used in design_voice!
-                                       # For now, we pass the current text (imperfect but works)
+                        ref_text=ref_text,
                         language="french",
                         emotion_instruction=emotion_instr,
                         output_path=out_path

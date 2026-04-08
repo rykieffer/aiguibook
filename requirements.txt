@@ -1,11 +1,46 @@
+# AIGUIBook - AI Audiobook Generator
+# =====================================
+
+# Core TTS engine (optimized with CUDA graph capture)
 faster-qwen3-tts
 torch>=2.5.1
 torchaudio>=2.5.1
+
+# Speech recognition (validation)
 faster-whisper>=1.0.0
+
+# Transformers / model loading
+transformers>=4.45.0
+accelerate
+
+# LLM API (OpenRouter / LM Studio / Ollama)
 openai>=1.0.0
+
+# Configuration
 pyyaml>=6.0
+
+# GUI
 gradio>=5.0.0
+
+# EPUB parsing
 ebooklib>=0.18
 lxml
+
+# Data models
 pydantic>=2.0
-edge-tts
+
+# Validation
+jiwer>=3.0
+
+# Audio processing
+pydub
+ffmpeg-python
+soundfile>=0.12.0
+numpy
+
+# CLI
+rich
+click
+
+# String comparison
+Levenshtein

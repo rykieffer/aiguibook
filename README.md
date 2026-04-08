@@ -1,84 +1,136 @@
-# AIGUIBook v7 - AI Audiobook Generator
+# AIGUIBook - AI Audiobook Generator
 
-Transform EPUB ebooks into multi-voice audiobooks (M4B) with AI character voices, emotion detection, and voice acting.
+Transform EPUB ebooks into audiobooks (M4B) with AI character voices and emotion acting.
+
+## Features
+
+- **EPUB Parsing**: Extracts chapters, metadata, TOC from any EPUB 2/3 file
+- **Smart Segmentation**: Splits text into TTS-friendly segments (40-100 words), never mid-sentence
+- **Character & Emotion Analysis**: LLM-powered detection of speakers and their emotions (angry, sad, whisper, etc.)
+- **Two Voice Modes**:
+  - **Single Narrator** (default): One voice acts out ALL characters with emotional shifts
+  - **Multi-Cast**: Unique AI-generated voice per character, each with acting
+- **Voice Design**: Describe a voice in text → AI generates a unique WAV reference
+- **Voice Cloning**: Use any 3+ second WAV as reference, clone it with emotion acting
+- **faster-qwen3-tts Engine**: CUDA-graph optimized inference, no flash-attn needed
+- **Text-Embedded JSON**: Analysis results include the full book text — no need to re-parse the EPUB
+- **Whisper Validation**: Optional quality check via faster-whisper (WER scoring)
+- **M4B Output**: Chapter markers, metadata, loudness normalization
 
 ## Architecture
 
-AIGUIBook uses a tailored TTS pipeline focused on **emotional voice acting**:
-
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                 STAGE 1: Character Analysis                 │
-│                                                             │
-│ EPUB → Parser → Segmenter → LLM (LM Studio / OpenRouter)    │
-│        Detects: narrator vs dialogue, character names,      │
-│        and specific emotions per segment.                   │
-│        *Results & Text are saved to a single JSON file.*    │
-└─────────────────────────────────────────────────────────────┘
-                              │
-                              ▼
-┌─────────────────────────────────────────────────────────────┐
-│                 STAGE 2: Voice Strategy                     │
-│                                                             │
-│ Single Narrator Mode (Recommended):                         │
-│   Pick ONE base voice (e.g. Qwen built-in or custom WAV).   │
-│   The AI applies the detected emotions (angry, sad,         │
-│   whisper) dynamically to act out the different roles.      │
-│                                                             │
-│ Multi-Cast Mode (Ensemble):                                 │
-│   Assign specific WAV reference files to specific           │
-│   characters. Uses VoiceDesign to generate unique voices.   │
-└─────────────────────────────────────────────────────────────┘
-                              │
-                              ▼
-┌─────────────────────────────────────────────────────────────┐
-│                 STAGE 3: Audiobook Synthesis                │
-│                                                             │
-│ Qwen3-TTS (1.7B) generates audio for each segment, applying │
-│ the emotion instructions.                                   │
-│ Files are assembled into an M4B with chapter markers.       │
-└─────────────────────────────────────────────────────────────┘
+EPUB → Parse → Segment → Analyze (LLM) → Voice Design → Generate (TTS) → Validate → M4B
+                                   │                              │
+                                   └── Saves to JSON ─────────────┘
+                                      (includes full text)
 ```
 
-## Features
-- **EPUB Parsing & Segmentation**: Automatically splits chapters into TTS-safe lengths at sentence boundaries.
-- **Fast Pre-filtering**: Skips LLM calls for 80% of segments that are purely narration, saving hours of GPU time.
-- **LLM Character/Emotion Scan**: Local (LM Studio/Ollama) or remote (OpenRouter) LLM detects the speaker and their emotion.
-- **Text-Embedded JSON**: Your parsed book text is saved directly inside the `character_analysis.json` file. You never have to re-upload the EPUB once it's scanned!
-- **Dynamic Voice Acting**: Qwen3-TTS dynamically shifts the tone of the narrator's voice based on the context of the dialogue.
-- **ElevenLabs Integration**: Automatically generates optimized Voice Design prompts for ElevenLabs if you wish to generate external reference voices.
+### Voice Pipeline
+
+1. **VoiceDesign** (`1.7B-VoiceDesign`): Generate a reference WAV from a text description
+2. **VoiceClone** (`1.7B-Base`): Clone the reference WAV with emotion instructions for audiobook generation
+
+The emotion instructions are passed via the `instruct` parameter of `generate_voice_clone()`, which guides the model's tone and style without modifying the text.
 
 ## Installation
 
 ```bash
+# Clone the repo
 git clone https://github.com/rykieffer/aiguibook.git
 cd aiguibook
 
 # Create conda environment
-conda create -n aiguibook python=3.11
+conda create -n aiguibook python=3.12
 conda activate aiguibook
 
-# Install dependencies (FFmpeg required system-wide)
-sudo apt install ffmpeg sox libsox-dev -y
+# Install dependencies
 pip install -r requirements.txt
-pip install qwen-tts
+pip install faster-qwen3-tts
+
+# System dependencies (Linux)
+sudo apt install ffmpeg sox libsox-dev
+```
+
+### RTX 5080 / Blackwell Note
+
+RTX 50xx GPUs need CUDA 12.8+ PyTorch wheels:
+```bash
+pip install --pre torch torchaudio --index-url https://download.pytorch.org/whl/nightly/cu128
 ```
 
 ## Usage
 
-Launch the Gradio Web UI:
+### GUI Mode (Recommended)
+
 ```bash
 python main.py
 ```
 
-### The 4-Step Workflow:
-1. **Analysis Tab**: Upload your `.epub` and click "Run Character Analysis". When done, click "Save Analysis File".
-2. **Voice Strategy Tab**: Choose "Single Narrator". Select "Ryan" or upload your own 3-second `.wav` file as the narrator. 
-3. **Production Tab**: To render the book, just drop in your `.json` analysis file and click **START GENERATION**.
-4. **Settings Tab**: Configure your LM Studio endpoint here.
+Open http://localhost:7860 in your browser.
 
-### Working with JSON
-Because the entire text of the book is now saved inside your `character_analysis.json` file, you can close the app, come back tomorrow, load *just the JSON file*, and immediately start rendering the audiobook.
+#### Workflow
+
+1. **Tab 1 - Analysis**: Upload EPUB → Parse → Run Character Analysis → Save JSON
+2. **Tab 2 - Voice Design**: Design narrator voice (describe it) → Optionally design character voices → Set voice strategy (Single Narrator or Multi-Cast)
+3. **Tab 3 - Production**: Click START GENERATION → Progress bar tracks each segment
+
+### CLI Mode
+
+```bash
+# Parse an EPUB and show metadata
+python cli.py parse --input book.epub
+
+# Full pipeline: EPUB to M4B
+python cli.py generate --input book.epub --output ./output
+
+# Character analysis only
+python cli.py analyze --input book.epub
+```
+
+### The JSON Workflow
+
+Once you save the analysis JSON, you never need the EPUB again:
+
+1. Parse EPUB + Run Analysis → Save JSON (includes all text + emotions)
+2. Next session: Load JSON → Go straight to Production
+
+## Configuration
+
+Config is stored at `~/.aiguibook/config.yaml`. Key settings:
+
+| Section | Key | Default | Description |
+|---------|-----|---------|-------------|
+| `tts` | `model` | `Qwen/Qwen3-TTS-12Hz-1.7B-Base` | TTS model variant |
+| `tts` | `device` | `cuda` | Compute device |
+| `analysis` | `llm_backend` | `lmstudio` | LLM backend (lmstudio/ollama/openrouter) |
+| `analysis` | `openrouter_api_key` | | OpenRouter API key |
+| `output` | `format` | `m4b` | Output format |
+| `output` | `bitrate` | `128k` | Audio bitrate |
+| `validation` | `enabled` | `true` | Whisper validation |
+| `general` | `language` | `french` | Primary language |
+
+## Project Structure
+
+```
+audiobook_ai/
+├── core/
+│   ├── config.py           # YAML configuration
+│   ├── epub_parser.py      # EPUB extraction
+│   ├── project.py          # Project/state management
+│   └── text_segmenter.py   # Sentence-aware text splitting
+├── analysis/
+│   └── character_analyzer.py  # LLM-based character/emotion detection
+├── tts/
+│   ├── qwen_engine.py      # faster-qwen3-tts wrapper
+│   └── voice_manager.py    # Voice profile management
+├── audio/
+│   ├── assembly.py         # M4B assembly with chapter markers
+│   └── validation.py       # Whisper-based quality check
+└── gui/
+    └── app.py              # Gradio web interface
+```
 
 ## License
+
 MIT License
