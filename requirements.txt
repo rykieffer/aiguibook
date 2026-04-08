@@ -1,4 +1,4 @@
-qwen-tts>=0.1.0
+faster-qwen3-tts
 torch>=2.5.1
 torchaudio>=2.5.1
 faster-whisper>=1.0.0
