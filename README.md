@@ -1,50 +1,84 @@
-# AIGUIBook - AI Audiobook Generator
+# AIGUIBook v7 - AI Audiobook Generator
 
-Transform EPUB ebooks into professional M4B audiobooks using AI character analysis and Qwen3-TTS voice cloning.
-
-**Project:** [GitHub - rykieffer/aiguibook](https://github.com/rykieffer/aiguibook)
-
-## Project Vision
-An end-to-end pipeline that:
-1.  **Analyzes** the book using an LLM (LM Studio/OpenRouter) to detect characters, emotions, and speaking roles.
-2.  **Assigns Voices** to characters. (Single Narrator mode: one voice with dynamic emotional range; Multi-Cast mode: different voices per character).
-3.  **Generates Audio** using **Qwen3-TTS** (Voice Cloning). It uses 3-second reference audio clips to create unique voices for each character and uses the detected emotions to modulate the speech style.
-4.  **Validates** generated audio quality using **Whisper** and Word Error Rate (WER).
-5.  **Assembles** the final M4B with chapter markers, metadata, and loudness normalization.
+Transform EPUB ebooks into multi-voice audiobooks (M4B) with AI character voices, emotion detection, and voice acting.
 
 ## Architecture
 
-| Layer | Technology | Purpose |
-|-------|-----------|---------|
-| **Text Analysis** | LM Studio / OpenRouter | LLM-based character detection, emotion tagging (e.g., "Holden is tense"). |
-| **Voice Engine** | Qwen3-TTS + Transformers | High-quality voice synthesis using reference audio for voice cloning. |
-| **Voice Reference** | Bark / Custom WAV | Generates or stores 3s reference clips for each character. |
-| **Validation** | Faster-Whisper | Ensures generated audio matches the text (WER check). |
-| **Assembly** | FFmpeg | Merges chunks into a single M4B with chapter markers. |
+AIGUIBook uses a tailored TTS pipeline focused on **emotional voice acting**:
 
-## Setup
+```
+┌─────────────────────────────────────────────────────────────┐
+│                 STAGE 1: Character Analysis                 │
+│                                                             │
+│ EPUB → Parser → Segmenter → LLM (LM Studio / OpenRouter)    │
+│        Detects: narrator vs dialogue, character names,      │
+│        and specific emotions per segment.                   │
+│        *Results & Text are saved to a single JSON file.*    │
+└─────────────────────────────────────────────────────────────┘
+                              │
+                              ▼
+┌─────────────────────────────────────────────────────────────┐
+│                 STAGE 2: Voice Strategy                     │
+│                                                             │
+│ Single Narrator Mode (Recommended):                         │
+│   Pick ONE base voice (e.g. Qwen built-in or custom WAV).   │
+│   The AI applies the detected emotions (angry, sad,         │
+│   whisper) dynamically to act out the different roles.      │
+│                                                             │
+│ Multi-Cast Mode (Ensemble):                                 │
+│   Assign specific WAV reference files to specific           │
+│   characters. Uses VoiceDesign to generate unique voices.   │
+└─────────────────────────────────────────────────────────────┘
+                              │
+                              ▼
+┌─────────────────────────────────────────────────────────────┐
+│                 STAGE 3: Audiobook Synthesis                │
+│                                                             │
+│ Qwen3-TTS (1.7B) generates audio for each segment, applying │
+│ the emotion instructions.                                   │
+│ Files are assembled into an M4B with chapter markers.       │
+└─────────────────────────────────────────────────────────────┘
+```
 
-### Prerequisites
-*   **Python:** 3.10+
-*   **GPU:** NVIDIA RTX (8GB+ VRAM recommended)
+## Features
+- **EPUB Parsing & Segmentation**: Automatically splits chapters into TTS-safe lengths at sentence boundaries.
+- **Fast Pre-filtering**: Skips LLM calls for 80% of segments that are purely narration, saving hours of GPU time.
+- **LLM Character/Emotion Scan**: Local (LM Studio/Ollama) or remote (OpenRouter) LLM detects the speaker and their emotion.
+- **Text-Embedded JSON**: Your parsed book text is saved directly inside the `character_analysis.json` file. You never have to re-upload the EPUB once it's scanned!
+- **Dynamic Voice Acting**: Qwen3-TTS dynamically shifts the tone of the narrator's voice based on the context of the dialogue.
+- **ElevenLabs Integration**: Automatically generates optimized Voice Design prompts for ElevenLabs if you wish to generate external reference voices.
 
-### Installation
+## Installation
+
 ```bash
+git clone https://github.com/rykieffer/aiguibook.git
+cd aiguibook
+
+# Create conda environment
+conda create -n aiguibook python=3.11
+conda activate aiguibook
+
+# Install dependencies (FFmpeg required system-wide)
+sudo apt install ffmpeg sox libsox-dev -y
 pip install -r requirements.txt
 pip install qwen-tts
-pip install --pre torch torchaudio --index-url https://download.pytorch.org/whl/nightly/cu128 # For RTX 50 Series
 ```
 
-### System Dependencies
-```bash
-sudo apt install sox ffmpeg libsox-dev -y
-```
+## Usage
 
-### Usage
+Launch the Gradio Web UI:
 ```bash
-# GUI Mode
 python main.py
-
-# CLI Mode
-python cli.py generate --input book.epub
 ```
+
+### The 4-Step Workflow:
+1. **Analysis Tab**: Upload your `.epub` and click "Run Character Analysis". When done, click "Save Analysis File".
+2. **Voice Strategy Tab**: Choose "Single Narrator". Select "Ryan" or upload your own 3-second `.wav` file as the narrator. 
+3. **Production Tab**: To render the book, just drop in your `.json` analysis file and click **START GENERATION**.
+4. **Settings Tab**: Configure your LM Studio endpoint here.
+
+### Working with JSON
+Because the entire text of the book is now saved inside your `character_analysis.json` file, you can close the app, come back tomorrow, load *just the JSON file*, and immediately start rendering the audiobook.
+
+## License
+MIT License
