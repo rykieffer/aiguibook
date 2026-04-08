@@ -485,7 +485,7 @@ class AudiobookGUI:
             
             res_path = engine.design_voice(
                 text=test_text,
-                instruct=self.narrator_voice_desc,
+                instruction=self.narrator_voice_desc,
                 language="french",
                 output_path=out_path
             )
@@ -573,7 +573,7 @@ class AudiobookGUI:
                 char_test_text = f"Bonjour, je suis {char_name}. Comment allez-vous aujourd'hui? Je suis ravi de faire votre connaissance."
                 res_path = engine.design_voice(
                     text=char_test_text,
-                    instruct=desc,
+                    instruction=desc,
                     language="french",
                     output_path=out_path
                 )
