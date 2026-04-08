@@ -70,6 +70,7 @@ class SpeechTag:
     character_description: str = ""
     suggested_voice_id: str = ""
     reasoning: str = ""
+    text: str = ""
 
     def to_dict(self) -> dict:
         return {
@@ -81,6 +82,7 @@ class SpeechTag:
             "emotion_instruction": self.emotion_instruction,
             "character_description": self.character_description,
             "suggested_voice_id": self.suggested_voice_id,
+            "text": self.text,
         }
 
 
@@ -354,6 +356,7 @@ class CharacterAnalyzer:
                 emotion=d.get("emotion", "neutral"),
                 voice_id=d.get("voice_id", "narrator_male"),
                 emotion_instruction=d.get("emotion_instruction", ""),
+                text=d.get("text", ""),
                 character_description=d.get("character_description", ""),
                 suggested_voice_id=d.get("suggested_voice_id", "narrator_male"),
             )
@@ -408,6 +411,7 @@ class CharacterAnalyzer:
                     segment_id=seg_id, speaker_type="narrator", character_name=None,
                     emotion="neutral", voice_id="narrator_male",
                     emotion_instruction=EMOTION_INSTRUCTIONS_FR["neutral"],
+                    text=seg_text,
                 )
                 all_tags[seg_id] = tag
             else:
@@ -479,6 +483,7 @@ class CharacterAnalyzer:
                 segment_id=seg_id, speaker_type="narrator", character_name=None,
                 emotion="neutral", voice_id="narrator_male",
                 emotion_instruction=EMOTION_INSTRUCTIONS_FR["neutral"],
+                    text=seg_text,
             )
 
         # Check cache
@@ -539,6 +544,7 @@ class CharacterAnalyzer:
             segment_id=seg_id, speaker_type="narrator", character_name=None,
             emotion="neutral", voice_id="narrator_male",
             emotion_instruction=EMOTION_INSTRUCTIONS_FR["neutral"],
+                    text=seg_text,
         )
 
     @staticmethod
@@ -635,6 +641,7 @@ class CharacterAnalyzer:
             emotion=emotion,
             voice_id=voice_id,
             emotion_instruction=EMOTION_INSTRUCTIONS_FR.get(emotion, EMOTION_INSTRUCTIONS_FR["neutral"]),
+            text=d.get("text", ""), 
         )
 
     def get_discovered_characters(self):

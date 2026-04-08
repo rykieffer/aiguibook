@@ -369,7 +369,8 @@ class AudiobookGUI:
                 sid: {
                     'speaker': tag.speaker_type,
                     'char': tag.character_name,
-                    'emotion': tag.emotion
+                    'emotion': tag.emotion,
+                    'text': getattr(tag, 'text', '')
                 }
                 for sid, tag in state.get("tags", {}).items()
             }
