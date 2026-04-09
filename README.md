@@ -1,139 +1,64 @@
-# AIGUIBook - AI Audiobook Generator
+# AIGUIBook v8 - AI Audiobook Generator
 
-Transform EPUB ebooks into audiobooks (M4B) with AI character voices and emotion acting.
+Transform EPUB ebooks into multi-voice audiobooks (M4A) with AI character voices, emotion detection, and voice acting.
+
+## Project Folder Structure
+
+Everything for one book lives in a single project folder:
+
+```
+~/audiobooks/my_book/
+├── analysis.json          # Characters, emotions, and full book text
+├── voices/
+│   ├── narrator.wav        # Narrator reference voice
+│   ├── Jean.wav           # Character voice (if ensemble mode)
+│   └── Marie.wav          # Character voice
+├── segments/
+│   ├── ch0_seg0.wav        # Generated audio per text segment
+│   ├── ch0_seg1.wav
+│   ├── ch1_seg0.wav
+│   └── ...
+└── My_Book.m4a            # Final assembled audiobook
+```
+
+No more hunting for temp files. One folder = one book. Load it, resume it, share it.
+
+## Workflow
+
+1. **Tab 1 - Analysis**: Set your project folder, upload EPUB, run character analysis. Everything auto-saves.
+2. **Tab 2 - Voice Design**: Design or upload the narrator voice. Optionally design character voices for ensemble mode.
+3. **Tab 3 - Production**: Hit START. WAVs go to `segments/`, final M4A goes to the project root. If it crashes, hit RESUME.
+
+### Resuming After a Crash
+Just click "Load Project from Folder" in Tab 1, paste the same folder path, then hit RESUME in Tab 3. It skips already-generated WAVs automatically.
 
 ## Features
-- **Automatic M4A Assembly**: After generation, all WAV segments are automatically assembled into a single M4A audiobook with chapter markers and AAC encoding.
-- **Configurable Silence**: Adjustable silence gap (0-2 seconds) between segments for natural pacing. Default: 0.75s.
-- **Resume Support**: If generation crashes, paste the output folder path and click RESUME. It scans for existing WAV files and skips already-generated segments.
-
-- **EPUB Parsing**: Extracts chapters, metadata, TOC from any EPUB 2/3 file
-- **Smart Segmentation**: Splits text into TTS-friendly segments (40-100 words), never mid-sentence
-- **Character & Emotion Analysis**: LLM-powered detection of speakers and their emotions (angry, sad, whisper, etc.)
-- **Two Voice Modes**:
-  - **Single Narrator** (default): One voice acts out ALL characters with emotional shifts
-  - **Multi-Cast**: Unique AI-generated voice per character, each with acting
-- **Voice Design**: Describe a voice in text → AI generates a unique WAV reference
-- **Voice Cloning**: Use any 3+ second WAV as reference, clone it with emotion acting
-- **faster-qwen3-tts Engine**: CUDA-graph optimized inference, no flash-attn needed
-- **Text-Embedded JSON**: Analysis results include the full book text — no need to re-parse the EPUB
-- **Whisper Validation**: Optional quality check via faster-whisper (WER scoring)
-- **M4B Output**: Chapter markers, metadata, loudness normalization
-
-## Architecture
-
-```
-EPUB → Parse → Segment → Analyze (LLM) → Voice Design → Generate (TTS) → Validate → M4B
-                                   │                              │
-                                   └── Saves to JSON ─────────────┘
-                                      (includes full text)
-```
-
-### Voice Pipeline
-
-1. **VoiceDesign** (`1.7B-VoiceDesign`): Generate a reference WAV from a text description
-2. **VoiceClone** (`1.7B-Base`): Clone the reference WAV with emotion instructions for audiobook generation
-
-The emotion instructions are passed via the `instruct` parameter of `generate_voice_clone()`, which guides the model's tone and style without modifying the text.
+- **Single Narrator Mode**: One voice acts out all roles with emotion
+- **Full Ensemble Mode**: Different AI-designed voices per character
+- **Configurable Silence**: 0-2 seconds between segments (default 0.75s)
+- **Resume Support**: Skip existing WAVs after a crash
+- **Automatic M4A Assembly**: Chapter markers, AAC encoding, loudness normalization
+- **Text-Embedded JSON**: analysis.json contains the full book text - no need to re-parse EPUB
 
 ## Installation
 
 ```bash
-# Clone the repo
 git clone https://github.com/rykieffer/aiguibook.git
 cd aiguibook
 
-# Create conda environment
 conda create -n aiguibook python=3.12
 conda activate aiguibook
 
-# Install dependencies
+sudo apt install ffmpeg sox libsox-dev -y
 pip install -r requirements.txt
 pip install faster-qwen3-tts
-
-# System dependencies (Linux)
-sudo apt install ffmpeg sox libsox-dev
-```
-
-### RTX 5080 / Blackwell Note
-
-RTX 50xx GPUs need CUDA 12.8+ PyTorch wheels:
-```bash
-pip install --pre torch torchaudio --index-url https://download.pytorch.org/whl/nightly/cu128
 ```
 
 ## Usage
-
-### GUI Mode (Recommended)
 
 ```bash
 python main.py
 ```
 
-Open http://localhost:7860 in your browser.
-
-#### Workflow
-
-1. **Tab 1 - Analysis**: Upload EPUB → Parse → Run Character Analysis → Save JSON
-2. **Tab 2 - Voice Design**: Design narrator voice (describe it) → Optionally design character voices → Set voice strategy (Single Narrator or Multi-Cast)
-3. **Tab 3 - Production**: Click START GENERATION → Progress bar tracks each segment
-
-### CLI Mode
-
-```bash
-# Parse an EPUB and show metadata
-python cli.py parse --input book.epub
-
-# Full pipeline: EPUB to M4B
-python cli.py generate --input book.epub --output ./output
-
-# Character analysis only
-python cli.py analyze --input book.epub
-```
-
-### The JSON Workflow
-
-Once you save the analysis JSON, you never need the EPUB again:
-
-1. Parse EPUB + Run Analysis → Save JSON (includes all text + emotions)
-2. Next session: Load JSON → Go straight to Production
-
-## Configuration
-
-Config is stored at `~/.aiguibook/config.yaml`. Key settings:
-
-| Section | Key | Default | Description |
-|---------|-----|---------|-------------|
-| `tts` | `model` | `Qwen/Qwen3-TTS-12Hz-1.7B-Base` | TTS model variant |
-| `tts` | `device` | `cuda` | Compute device |
-| `analysis` | `llm_backend` | `lmstudio` | LLM backend (lmstudio/ollama/openrouter) |
-| `analysis` | `openrouter_api_key` | | OpenRouter API key |
-| `output` | `format` | `m4b` | Output format |
-| `output` | `bitrate` | `128k` | Audio bitrate |
-| `validation` | `enabled` | `true` | Whisper validation |
-| `general` | `language` | `french` | Primary language |
-
-## Project Structure
-
-```
-audiobook_ai/
-├── core/
-│   ├── config.py           # YAML configuration
-│   ├── epub_parser.py      # EPUB extraction
-│   ├── project.py          # Project/state management
-│   └── text_segmenter.py   # Sentence-aware text splitting
-├── analysis/
-│   └── character_analyzer.py  # LLM-based character/emotion detection
-├── tts/
-│   ├── qwen_engine.py      # faster-qwen3-tts wrapper
-│   └── voice_manager.py    # Voice profile management
-├── audio/
-│   ├── assembly.py         # M4B assembly with chapter markers
-│   └── validation.py       # Whisper-based quality check
-└── gui/
-    └── app.py              # Gradio web interface
-```
-
 ## License
-
-MIT License
+MIT
