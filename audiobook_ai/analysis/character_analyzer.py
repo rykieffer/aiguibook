@@ -45,17 +45,31 @@ EMOTION_INSTRUCTIONS_EN = {
     "neutral": "Speak in a neutral, natural tone without particular emotion",
 }
 
-SEGMENT_PROMPT = '''Analyze this text segment for audiobook production.
+SEGMENT_PROMPT = '''You are an audiobook dialogue editor. Analyze this text segment.
 
 TEXT: "{text}"
 
-Return ONLY a JSON object with these fields:
-- speaker_type: "narrator" if narration, or "dialogue" if a character speaks
-- character_name: The character's name if dialogue, or null for narrator
+TASK:
+1. If this segment contains ONLY narration or ONLY one character's dialogue, return a SINGLE JSON object.
+2. If this segment MIXES narration with dialogue, or has MULTIPLE speakers, SPLIT it into sub-segments. Return a JSON ARRAY.
+
+Each object must have:
+- text: The exact text for this sub-segment (copied from the original)
+- speaker_type: "narrator" or "dialogue"
+- character_name: Character name if dialogue, or null for narrator
 - emotion: one of: calm, excited, angry, sad, whisper, tense, urgent, amused, contemptuous, surprised, neutral
 
-Example: {{"speaker_type":"narrator","character_name":null,"emotion":"calm"}}
-Example: {{"speaker_type":"dialogue","character_name":"Jean","emotion":"angry"}}'''
+CRITICAL RULES:
+- NEVER mix narration and dialogue in the same sub-segment. Always split at the boundary.
+- French dialogue uses em-dashes (—), guillemets (« »), or plain quotes.
+- Preserve the original text exactly — do NOT paraphrase or summarize.
+- If the text is purely narration with no speech, return a single object with speaker_type "narrator".
+
+SINGLE SEGMENT EXAMPLE:
+{{"text":"Il marchait dans la nuit.","speaker_type":"narrator","character_name":null,"emotion":"calm"}}
+
+SPLIT SEGMENT EXAMPLE:
+[{{"text":"Il s'approcha de la porte.","speaker_type":"narrator","character_name":null,"emotion":"tense"}},{{"text":"— Entrez, dit Jean d'une voix sourde.","speaker_type":"dialogue","character_name":"Jean","emotion":"whisper"}}]'''
 
 
 @dataclass
@@ -482,14 +496,29 @@ Example: {{"Jean": "A middle-aged male voice, deep and authoritative, French acc
                     segment_id=seg_id, speaker_type="narrator", character_name=None,
                     emotion="neutral", voice_id="narrator_male",
                     emotion_instruction=EMOTION_INSTRUCTIONS_FR["neutral"],
-                    text=text,
+                    text=seg_text,
                 )
                 all_tags[seg_id] = tag
             else:
-                tag = self._analyze_single_segment(seg_id, seg_text, language)
-                all_tags[seg_id] = tag
+                result = self._analyze_single_segment(seg_id, seg_text, language)
+                
+                # Handle both single tag and list of sub-tags (from LLM split)
+                if isinstance(result, list):
+                    # LLM split this segment into sub-segments
+                    for sub_tag in result:
+                        all_tags[sub_tag.segment_id] = sub_tag
+                        if sub_tag.character_name:
+                            if sub_tag.character_name not in self._characters:
+                                self._characters[sub_tag.character_name] = set()
+                            self._characters[sub_tag.character_name].add(sub_tag.segment_id)
+                            if sub_tag.character_name not in all_chars:
+                                all_chars.append(sub_tag.character_name)
+                    tag = result[0]  # For progress tracking
+                else:
+                    tag = result
+                    all_tags[seg_id] = tag
 
-            if tag.character_name:
+            if not isinstance(result, list) and tag.character_name:
                 if tag.character_name not in self._characters:
                     self._characters[tag.character_name] = set()
                 self._characters[tag.character_name].add(seg_id)
@@ -553,22 +582,30 @@ Example: {{"Jean": "A middle-aged male voice, deep and authoritative, French acc
         }
 
     def _analyze_single_segment(self, seg_id, text, language):
-        """Analyze a single text segment via LLM, with pre-filter for narration."""
+        """Analyze a single text segment via LLM, with pre-filter for narration.
+        
+        Returns either:
+        - A single SpeechTag (if the segment is pure narration or single-speaker dialogue)
+        - A list of SpeechTags (if the LLM split the segment into sub-segments)
+        """
         # --- FAST PRE-FILTER: skip LLM for pure narration ---
         if not self._has_dialogue(text):
             return SpeechTag(
                 segment_id=seg_id, speaker_type="narrator", character_name=None,
                 emotion="neutral", voice_id="narrator_male",
                 emotion_instruction=EMOTION_INSTRUCTIONS_FR["neutral"],
-                    text=text,
+                text=text,
             )
 
         # Check cache
         cache_key = json.dumps({"id": seg_id, "text": text[:200]}, sort_keys=True)
         if cache_key in self._cache:
-            return self._tag_from_dict(self._cache[cache_key])
+            cached = self._cache[cache_key]
+            if isinstance(cached, list):
+                return [self._tag_from_dict(d) for d in cached]
+            return self._tag_from_dict(cached)
 
-        prompt = SEGMENT_PROMPT.format(text=text[:500])
+        prompt = SEGMENT_PROMPT.format(text=text[:800])
 
         for attempt in range(self._max_retries):
             try:
@@ -580,36 +617,62 @@ Example: {{"Jean": "A middle-aged male voice, deep and authoritative, French acc
                 )
 
                 raw = response.choices[0].message.content or ""
-                content = raw.strip()
+                resp_content = raw.strip()
 
-                if not content or len(content) < 3:
+                if not resp_content or len(resp_content) < 3:
                     if attempt < self._max_retries - 1:
                         logger.warning("Empty response for %s, retrying..." % seg_id)
                         time.sleep(0.5)
                     continue
 
-                print("\n[%s] LLM response (attempt %d): %s" % (seg_id, attempt + 1, content[:200]))
+                print("\n[%s] LLM response (attempt %d): %s" % (seg_id, attempt + 1, resp_content[:200]))
 
-                parsed = self._extract_json(content)
+                parsed = self._extract_json(resp_content)
                 if parsed is None:
                     if attempt < self._max_retries - 1:
                         logger.warning("No JSON for %s, retrying..." % seg_id)
                         time.sleep(0.5)
                     continue
 
-                # If parser returns a list, take first element
-                if isinstance(parsed, list):
-                    parsed = parsed[0] if parsed else None
+                # --- Handle LLM response: could be single object OR array ---
+                if isinstance(parsed, list) and len(parsed) > 1:
+                    # LLM SPLIT the segment into sub-segments!
+                    sub_tags = []
+                    for sub_idx, sub in enumerate(parsed):
+                        if not isinstance(sub, dict):
+                            continue
+                        sub_id = f"{seg_id}_sub{sub_idx:02d}"
+                        sub_text = sub.get("text", "").strip()
+                        if not sub_text:
+                            sub_text = text  # Fallback
+                        tag = self._tag_from_dict({
+                            "segment_id": sub_id,
+                            "speaker_type": sub.get("speaker_type", "narrator"),
+                            "character_name": sub.get("character_name"),
+                            "emotion": sub.get("emotion", "neutral"),
+                            "text": sub_text,
+                        })
+                        sub_tags.append(tag)
+                    
+                    if sub_tags:
+                        logger.info("LLM SPLIT %s into %d sub-segments" % (seg_id, len(sub_tags)))
+                        self._cache[cache_key] = [{"segment_id": t.segment_id, "speaker_type": t.speaker_type, "character_name": t.character_name, "emotion": t.emotion, "text": t.text} for t in sub_tags]
+                        return sub_tags
+                    
+                elif isinstance(parsed, list) and len(parsed) == 1:
+                    parsed = parsed[0]
 
                 if parsed and isinstance(parsed, dict):
+                    # Single segment - but check if LLM provided split text
+                    llm_text = parsed.get("text", "").strip()
                     tag = self._tag_from_dict({
                         "segment_id": seg_id,
                         "speaker_type": parsed.get("speaker_type", "narrator"),
                         "character_name": parsed.get("character_name"),
                         "emotion": parsed.get("emotion", "neutral"),
-                        "text": text,
+                        "text": llm_text if llm_text else text,
                     })
-                    self._cache[cache_key] = {"tag": parsed}
+                    self._cache[cache_key] = {"segment_id": seg_id, "speaker_type": tag.speaker_type, "character_name": tag.character_name, "emotion": tag.emotion, "text": tag.text}
                     return tag
 
             except Exception as e:
@@ -622,7 +685,7 @@ Example: {{"Jean": "A middle-aged male voice, deep and authoritative, French acc
             segment_id=seg_id, speaker_type="narrator", character_name=None,
             emotion="neutral", voice_id="narrator_male",
             emotion_instruction=EMOTION_INSTRUCTIONS_FR["neutral"],
-                    text=text,
+            text=text,
         )
 
     @staticmethod
