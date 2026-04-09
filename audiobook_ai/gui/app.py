@@ -563,6 +563,19 @@ class AudiobookGUI:
             engine.unload_model()
             return f"Error: {e}", None
 
+    @staticmethod
+    def _auto_voice_description(char_name: str) -> str:
+        """Generate a default voice description from a character name."""
+        # Simple heuristic based on common French name patterns
+        female_hints = ["a", "e", "ie", "ine", "ette", "elle", "oise", "urie", "arie", "lene"]
+        name_lower = char_name.lower()
+        is_likely_female = any(name_lower.endswith(h) for h in female_hints)
+
+        if is_likely_female:
+            return f"A female voice, clear and expressive, French accent, suitable for the character {char_name}."
+        else:
+            return f"A male voice, warm and natural, French accent, suitable for the character {char_name}."
+
     def design_all_characters(self, global_desc, state):
         """Design voices for all characters. Auto-saves to project/voices/."""
         if not state.get("analyzed"):
@@ -582,9 +595,13 @@ class AudiobookGUI:
                 if char_name == "Narrator":
                     continue
 
-                desc = self.character_voice_descs.get(char_name, global_desc)
+                # Priority: specific desc > global desc > auto-generated
+                desc = self.character_voice_descs.get(char_name, "")
                 if not desc:
-                    continue
+                    desc = global_desc
+                if not desc:
+                    desc = self._auto_voice_description(char_name)
+                    self._log(f"Auto-generated description for {char_name}: {desc}")
 
                 out_path = os.path.join(self.voices_dir, f"{char_name.replace(' ', '_')}.wav")
 
