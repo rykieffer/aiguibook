@@ -71,6 +71,18 @@ class AudiobookGUI:
         self._log_messages.append(f"[{time.strftime('%H:%M:%S')}] {msg}")
         logger.info(msg)
 
+    @staticmethod
+    def _natural_sort_key(seg):
+        """Sort segments by chapter and segment index NUMERICALLY.
+        Fixes the bug where string sort puts ch10 before ch1."""
+        import re
+        seg_id = seg.id if hasattr(seg, 'id') else (seg.get('id', '') if isinstance(seg, dict) else str(seg))
+        m = re.match(r'ch(\d+)_s(\d+)', seg_id)
+        if m:
+            return (int(m.group(1)), int(m.group(2)))
+        nums = re.findall(r'\d+', seg_id)
+        return tuple(int(n) for n in nums) if nums else (9999, 9999)
+
     def _get_logs(self):
         return "\n".join(self._log_messages[-100:])
 
@@ -684,9 +696,18 @@ class AudiobookGUI:
         return dict(tags)
 
     def _build_segments_from_tags(self):
-        """Build segment list from tags (no EPUB re-parse needed)."""
+        """Build segment list from tags (no EPUB re-parse needed).
+        Uses natural sort so ch1 < ch2 < ch10 (not ch1 < ch10 < ch2)."""
+        import re
+        def _seg_sort_key(sid):
+            m = re.match(r'ch(\d+)_s(\d+)', sid)
+            if m:
+                return (int(m.group(1)), int(m.group(2)))
+            nums = re.findall(r'\d+', sid)
+            return tuple(int(n) for n in nums) if nums else (9999, 9999)
+        
         segs = []
-        for sid in sorted(self._tags.keys()):
+        for sid in sorted(self._tags.keys(), key=_seg_sort_key):
             segs.append({"id": sid, "text": self._tags[sid].get("text", "")})
         return segs
 
@@ -790,8 +811,17 @@ class AudiobookGUI:
         self._log("Assembling final audiobook...")
         yield 92, "Assembling M4A...", self._get_logs(), None
 
+        # Collect WAV files in correct segment order
+        # all_segs should already be naturally sorted, but double-check
+        import re as _asm_re
+        def _asm_sort_key(s):
+            sid = s.id if hasattr(s, 'id') else s.get('id', '')
+            m = _asm_re.match(r'ch(\d+)_s(\d+)', sid)
+            return (int(m.group(1)), int(m.group(2))) if m else (0, 0)
+        sorted_segs = sorted(all_segs, key=_asm_sort_key)
+        
         wav_files = []
-        for seg in all_segs:
+        for seg in sorted_segs:
             seg_id = seg.id if hasattr(seg, 'id') else seg.get("id", "")
             wav_path = os.path.join(seg_dir, f"{seg_id}.wav")
             if os.path.exists(wav_path):
@@ -804,7 +834,7 @@ class AudiobookGUI:
         # Build chapter titles from segment prefixes
         chapter_titles = []
         seen_chapters = set()
-        for seg in all_segs:
+        for seg in sorted_segs:
             seg_id = seg.id if hasattr(seg, 'id') else seg.get("id", "")
             ch_prefix = seg_id.split("_")[0]
             if ch_prefix not in seen_chapters:
@@ -880,9 +910,25 @@ class AudiobookGUI:
                     title = ch.get("title", "") if isinstance(ch, dict) else getattr(ch, "title", "")
                     if text:
                         all_segs.extend(seg.segment_chapter(text, title, ch_idx))
+                # Natural sort
+                all_segs = sorted(all_segs, key=_nk)
+                # Natural sort to guarantee ch1 < ch2 < ch10
+                import re as _re
+                def _nk(s):
+                    sid = s.id if hasattr(s, 'id') else s.get('id', '')
+                    m = _re.match(r'ch(\d+)_s(\d+)', sid)
+                    return (int(m.group(1)), int(m.group(2))) if m else (0, 0)
+                all_segs = sorted(all_segs, key=_nk)
 
             if preview_mode:
-                first_ch = [s for s in all_segs if (s.id if hasattr(s, 'id') else s.get("id", "")).startswith("ch0")]
+                # Preview: first chapter only (use numeric check to avoid ch0 matching ch00+ch01+...)
+                import re as _re2
+                def _ch_num(s):
+                    sid = s.id if hasattr(s, 'id') else s.get('id', '')
+                    m = _re2.match(r'ch(\d+)_', sid)
+                    return int(m.group(1)) if m else 0
+                first_ch_idx = _ch_num(all_segs[0]) if all_segs else 0
+                first_ch = [s for s in all_segs if _ch_num(s) == first_ch_idx]
                 if first_ch:
                     all_segs = first_ch
                     self._log(f"PREVIEW MODE: limited to {len(all_segs)} segments")

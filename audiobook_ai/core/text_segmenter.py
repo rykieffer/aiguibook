@@ -38,7 +38,7 @@ _RE_EMDASH = re.compile(r"(?:^|\n)\s*\u2014\s+")
 @dataclass
 class TextSegment:
     """A single text segment suitable for TTS."""
-    id: str       # "ch{chapter_idx}_s{segment_idx}"
+    id: str       # "ch{chapter_idx:03d}_s{segment_idx:03d}" - zero-padded for correct sort
     text: str
     word_count: int
 
@@ -294,7 +294,7 @@ class TextSegmenter:
                 segments[-1].word_count = len(segments[-1].text.split())
             else:
                 segments.append(TextSegment(
-                    id=f"ch{chapter_idx}_s{seg_idx:03d}",
+                    id=f"ch{chapter_idx:03d}_s{seg_idx:03d}",
                     text=seg_text,
                     word_count=len(seg_text.split()),
                 ))
