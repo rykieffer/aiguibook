@@ -80,45 +80,9 @@ class AudiobookGUI:
             self._engine = TTSEngine()
         return self._engine
 
-    @staticmethod
-    def _list_existing_projects() -> list:
-        """Scan ~/audiobooks/ for project folders (ones with analysis.json)."""
-        projects_root = DEFAULT_PROJECTS_ROOT
-        if not os.path.isdir(projects_root):
-            return []
-        results = []
-        for name in sorted(os.listdir(projects_root)):
-            full_path = os.path.join(projects_root, name)
-            if os.path.isdir(full_path):
-                # Show folders that have analysis.json OR voices/ OR segments/
-                has_json = os.path.exists(os.path.join(full_path, "analysis.json"))
-                has_voices = os.path.isdir(os.path.join(full_path, "voices"))
-                has_segments = os.path.isdir(os.path.join(full_path, "segments"))
-                if has_json or has_voices or has_segments:
-                    # Add a small badge to indicate what's inside
-                    badge = ""
-                    if has_json:
-                        badge += " [analyzed]"
-                    if has_voices:
-                        badge += " [voices]"
-                    if has_segments:
-                        # Count segment WAVs
-                        seg_count = len([f for f in os.listdir(os.path.join(full_path, "segments")) if f.endswith(".wav")])
-                        badge += f" [{seg_count} wav]"
-                    results.append(full_path + badge)
-                else:
-                    # Empty project folder, show it too
-                    results.append(full_path)
-        return results
-
-    def _refresh_project_list(self):
-        """Refresh the dropdown with current projects."""
-        return gr.update(choices=self._list_existing_projects())
-
     def _ensure_project_dir(self, project_dir: str) -> str:
         """Create project directory structure and return the path."""
-        # Strip any badge suffix from dropdown
-        project_dir = project_dir.split(" [")[0].strip() if project_dir else ""
+        project_dir = project_dir.strip() if project_dir else ""
         if not project_dir:
             project_dir = os.path.join(DEFAULT_PROJECTS_ROOT, f"book_{time.strftime('%Y%m%d_%H%M%S')}")
         os.makedirs(project_dir, exist_ok=True)
@@ -192,15 +156,9 @@ class AudiobookGUI:
 
                     with gr.Row():
                         with gr.Column():
-                            # PROJECT FOLDER - dropdown for existing + textbox for new
-                            dd_existing_projects = gr.Dropdown(
-                                label="Existing Projects (click to select)",
-                                choices=self._list_existing_projects(),
-                                interactive=True,
-                                allow_custom_value=False,
-                            )
+                            # PROJECT FOLDER - manual path input
                             txt_project_dir = gr.Textbox(
-                                label="Project Folder (or type new path)",
+                                label="Project Folder",
                                 placeholder=f"e.g. {DEFAULT_PROJECTS_ROOT}/my_book",
                                 value="",
                                 lines=1,
@@ -217,19 +175,11 @@ class AudiobookGUI:
                                 headers=["Character", "Count", "Emotions"],
                                 interactive=False,
                             )
-                            # Load existing project
-                            gr.Markdown("---\n**Load Existing Project**")
+                            # Load project from folder
                             btn_load_project = gr.Button("Load Project from Folder", variant="secondary")
-                            btn_refresh_list = gr.Button("Refresh Project List", variant="secondary")
                             status_load = gr.Textbox(label="Load Status", interactive=False)
 
                     # Events
-                    # Dropdown fills the textbox (strip the badge suffix)
-                    dd_existing_projects.change(
-                        fn=lambda path: path.split(" [")[0] if path else "",
-                        inputs=[dd_existing_projects],
-                        outputs=[txt_project_dir],
-                    )
                     file_epub.change(
                         fn=self.parse_epub,
                         inputs=[file_epub, txt_project_dir, state],
@@ -245,11 +195,7 @@ class AudiobookGUI:
                         inputs=[txt_project_dir, state],
                         outputs=[status_load, book_info, char_list_df, state],
                     )
-                    btn_refresh_list.click(
-                        fn=self._refresh_project_list,
-                        inputs=[],
-                        outputs=[dd_existing_projects],
-                    )
+
 
                 # ═══════════════════════════════════════
                 # TAB 2: VOICE DESIGN
@@ -993,12 +939,13 @@ class AudiobookGUI:
         self.app.queue()
 
         # Allow Gradio to serve files from the project directories
-        # (voices, segments, m4a output) - otherwise it throws InvalidPathError
-        allowed = [DEFAULT_PROJECTS_ROOT]
+        allowed = []
         if self.project_dir and os.path.isdir(self.project_dir):
             allowed.append(self.project_dir)
             allowed.append(os.path.join(self.project_dir, "voices"))
             allowed.append(os.path.join(self.project_dir, "segments"))
+        if os.path.isdir(DEFAULT_PROJECTS_ROOT):
+            allowed.append(DEFAULT_PROJECTS_ROOT)
 
         self.app.launch(
             server_name=server_name,
