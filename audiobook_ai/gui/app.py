@@ -154,22 +154,19 @@ class AudiobookGUI:
 
                     with gr.Row():
                         with gr.Column():
-                            # PROJECT FOLDER is the first input
+                            # PROJECT FOLDER - auto-creates on use
                             txt_project_dir = gr.Textbox(
-                                label="Project Folder (Dossier du projet)",
+                                label="Project Folder (auto-created on first use)",
                                 placeholder=f"e.g. {DEFAULT_PROJECTS_ROOT}/my_book",
                                 value="",
                                 lines=1,
                             )
-                            btn_set_project = gr.Button("Set / Create Project Folder", variant="secondary")
-                            status_project = gr.Textbox(label="Project Status", interactive=False)
 
-                            file_epub = gr.File(label="Upload EPUB", file_types=[".epub"])
-                            btn_parse = gr.Button("1. Parse Book", variant="primary")
+                            file_epub = gr.File(label="Upload EPUB (auto-parses on upload)", file_types=[".epub"])
                             book_info = gr.Textbox(label="Metadata", lines=4, interactive=False)
 
                         with gr.Column():
-                            btn_analyze = gr.Button("2. Analyze Characters (LLM)", variant="primary")
+                            btn_analyze = gr.Button("Analyze Characters (LLM)", variant="primary")
                             status_bar = gr.Textbox(label="Status", lines=2)
                             char_list_df = gr.Dataframe(
                                 label="Detected Characters",
@@ -181,18 +178,8 @@ class AudiobookGUI:
                             btn_load_project = gr.Button("Load Project from Folder", variant="secondary")
                             status_load = gr.Textbox(label="Load Status", interactive=False)
 
-                    # Events
-                    btn_set_project.click(
-                        fn=self.set_project_dir,
-                        inputs=[txt_project_dir],
-                        outputs=[status_project],
-                    )
+                    # Events - EPUB upload auto-parses and auto-sets project folder
                     file_epub.change(
-                        fn=self.parse_epub,
-                        inputs=[file_epub, txt_project_dir, state],
-                        outputs=[book_info, char_list_df, state],
-                    )
-                    btn_parse.click(
                         fn=self.parse_epub,
                         inputs=[file_epub, txt_project_dir, state],
                         outputs=[book_info, char_list_df, state],
@@ -316,14 +303,6 @@ class AudiobookGUI:
         return self.app
 
     # ── Tab 1 Handlers ──────────────────────────────────────────
-
-    def set_project_dir(self, project_dir_text):
-        """Create or validate the project folder."""
-        try:
-            path = self._ensure_project_dir(project_dir_text.strip())
-            return f"Project folder ready: {path}\n  voices/  segments/  analysis.json"
-        except Exception as e:
-            return f"Error: {e}"
 
     def parse_epub(self, file_epub, project_dir_text, state):
         if not state:
