@@ -305,12 +305,12 @@ class AudiobookGUI:
 
                     btn_start_prod.click(
                         fn=self.start_generation,
-                        inputs=[chk_preview, silence_slider, state],
+                        inputs=[chk_preview, silence_slider, voice_strategy_radio, state],
                         outputs=[progress, phase, logs, m4a_out_prod],
                     )
                     btn_resume_prod.click(
                         fn=self.resume_generation,
-                        inputs=[silence_slider, state],
+                        inputs=[silence_slider, voice_strategy_radio, state],
                         outputs=[progress, phase, logs, m4a_out_prod],
                     )
 
@@ -747,7 +747,7 @@ class AudiobookGUI:
             char_name = tag_data.get("char") or tag_data.get("character_name") or "Narrator"
             emotion = tag_data.get("emotion", "calm")
 
-            if char_name not in self._characters and char_name != "Narrator":
+            if not char_name or (char_name not in self._characters and char_name != "Narrator"):
                 char_name = "Narrator"
 
             # Reference audio
@@ -755,9 +755,22 @@ class AudiobookGUI:
             if strategy == "single_narrator":
                 ref_audio = self.narrator_wav_path
             else:
-                ref_audio = self.narrator_wav_path
-                if char_name != "Narrator" and char_name in self.character_voice_paths:
-                    ref_audio = self.character_voice_paths[char_name]
+                # Full ensemble: use character voice if available
+                ref_audio = self.narrator_wav_path  # Default fallback
+                if char_name and char_name != "Narrator":
+                    # Try exact match first, then case-insensitive
+                    if char_name in self.character_voice_paths:
+                        ref_audio = self.character_voice_paths[char_name]
+                        self._log(f"  Using character voice for: {char_name}")
+                    else:
+                        # Try case-insensitive match
+                        for cached_name, cached_path in self.character_voice_paths.items():
+                            if cached_name.lower() == char_name.lower():
+                                ref_audio = cached_path
+                                self._log(f"  Using character voice (case-insensitive): {cached_name}")
+                                break
+                        else:
+                            self._log(f"  WARNING: No voice for character '{char_name}', using narrator")
 
             if not ref_audio:
                 self._log(f"Skipping {seg_id}: No reference audio for {char_name}")
@@ -869,7 +882,7 @@ class AudiobookGUI:
             self._log(f"Assembly error: {e}")
             yield 95, f"Assembly failed: {e}", self._get_logs(), None
 
-    def start_generation(self, preview_mode, silence_duration, state):
+    def start_generation(self, preview_mode, silence_duration, voice_strategy, state):
         """Generate the audiobook from scratch."""
         if not state or not state.get("analyzed"):
             yield 0, "Error: Run Analysis first in Tab 1.", self._get_logs(), None
@@ -883,6 +896,9 @@ class AudiobookGUI:
             yield 0, "Error: Set a project folder in Tab 1 first.", self._get_logs(), None
             return
 
+        self.voice_strategy = voice_strategy or self.voice_strategy
+        self._log(f"Voice strategy: {self.voice_strategy}")
+        self._log(f"Character voice paths: {list(self.character_voice_paths.keys())}")
         self._log("Starting Production Pipeline...")
         self._tags = self._normalize_tags(state)
         self._characters = state.get("chars", [])
@@ -942,7 +958,7 @@ class AudiobookGUI:
             self._log(f"Fatal Error: {e}")
             yield 0, f"Error: {e}", self._get_logs(), None
 
-    def resume_generation(self, silence_duration, state):
+    def resume_generation(self, silence_duration, voice_strategy, state):
         """Resume generation - skips existing WAVs in segments/ folder."""
         if not state or not state.get("analyzed"):
             yield 0, "Error: Load the project first (Tab 1).", self._get_logs(), None
