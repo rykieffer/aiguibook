@@ -3,6 +3,9 @@
 Transform EPUB ebooks into audiobooks (M4B) with AI character voices and emotion acting.
 
 ## Features
+- **Automatic M4A Assembly**: After generation, all WAV segments are automatically assembled into a single M4A audiobook with chapter markers and AAC encoding.
+- **Configurable Silence**: Adjustable silence gap (0-2 seconds) between segments for natural pacing. Default: 0.75s.
+- **Resume Support**: If generation crashes, paste the output folder path and click RESUME. It scans for existing WAV files and skips already-generated segments.
 
 - **EPUB Parsing**: Extracts chapters, metadata, TOC from any EPUB 2/3 file
 - **Smart Segmentation**: Splits text into TTS-friendly segments (40-100 words), never mid-sentence

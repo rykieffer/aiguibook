@@ -1,272 +1,284 @@
 """
-TTSEngine - Wraps faster-qwen3-tts for high-performance GPU inference.
-
-Uses CUDA graph capture for fast generation. No flash-attn required.
-Supports VoiceDesign (creating voices) and VoiceClone (generating with acting).
+QwenEngine - Fast TTS generation using faster-qwen3-tts.
+Optimized for local GPU inference without brittle dependencies like flash-attn.
 """
-
-from __future__ import annotations
 
 import logging
 import os
 import tempfile
 import time
-import traceback
 from typing import Optional, List, Tuple
-
-import numpy as np
 import soundfile as sf
+import numpy as np
 
 logger = logging.getLogger("AIGUIBook.Engine")
 
-# Model variant paths
-MODEL_VOICE_DESIGN = "Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign"
-MODEL_BASE = "Qwen/Qwen3-TTS-12Hz-1.7B-Base"
-MODEL_CUSTOM_VOICE = "Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice"
-
 
 class TTSEngine:
-    """Engine manager for faster-qwen3-tts.
-    
-    Loads specific model variants on demand:
-    - VoiceDesign model: for creating reference voices from text descriptions
-    - Base model: for voice cloning + emotion acting during audiobook generation
-    """
-
     def __init__(self):
         self.model = None
         self.model_name = ""
         self.device = "cuda"
 
-    def load_model(self, model_name: str, device: str = "cuda"):
-        """Load a specific Qwen3-TTS model variant.
-        
-        Args:
-            model_name: HuggingFace model ID (e.g. Qwen/Qwen3-TTS-12Hz-1.7B-Base)
-            device: Device string (default: "cuda")
-        """
-        if self.model is not None and self.model_name == model_name:
-            logger.info(f"Model {model_name} already loaded, reusing.")
+    def load_model(self, model_path: str, device: str = "cuda"):
+        if self.model is not None and self.model_name == model_path:
             return
 
-        # Unload previous model first
-        if self.model is not None:
-            self.unload_model()
-
-        logger.info(f"Loading FasterQwen3TTS: {model_name} on {device}")
-
+        logger.info(f"Loading FasterQwen3TTS: {model_path} on {device}")
+        
         try:
             from faster_qwen3_tts import FasterQwen3TTS
-            import torch
-
+            
+            # Load the optimized model
             self.model = FasterQwen3TTS.from_pretrained(
-                model_name=model_name,
-                device=device,
-                dtype=torch.bfloat16,
-                attn_implementation="sdpa",
+                pretrained_model=model_path,
+                device=device
             )
-            self.model_name = model_name
+            
+            self.model_name = model_path
             self.device = device
-            logger.info(f"Model loaded successfully: {model_name}")
-
+            logger.info("Model loaded successfully.")
+            
         except ImportError:
-            raise RuntimeError(
-                "faster-qwen3-tts not installed. Run: pip install faster-qwen3-tts"
-            )
+            raise RuntimeError("Please install the optimized engine: pip install faster-qwen3-tts")
         except Exception as e:
-            logger.error(f"Failed to load model {model_name}: {e}")
+            logger.error(f"Failed to load model {model_path}: {e}")
             self.model = None
             raise
 
     def unload_model(self):
-        """Clear VRAM by deleting the model."""
-        if self.model is not None:
+        if self.model:
             import torch
-
-            logger.info("Unloading model to free VRAM...")
             del self.model
             self.model = None
             self.model_name = ""
             torch.cuda.empty_cache()
             logger.info("VRAM cleared.")
 
-    def design_voice(
-        self,
-        text: str,
-        instruction: str,
-        language: str,
-        output_path: str,
-    ) -> Optional[str]:
-        """Generate a brand new voice from a text description.
-        
-        Uses the VoiceDesign model variant. The generated audio serves as
-        a reference for voice cloning later.
-        
-        Args:
-            text: Text to speak (becomes the ref_text for cloning later)
-            instruction: Voice description (e.g. "Warm male voice, French accent")
-            language: Language code (e.g. "french", "english")
-            output_path: Where to save the WAV file
-            
-        Returns:
-            Path to the generated WAV, or None on failure
-        """
+    def design_voice(self, text: str, instruction: str, language: str, output_path: str) -> Optional[str]:
+        """Generate a brand new voice from a text description."""
         if not self.model:
-            raise RuntimeError("Model not loaded. Call load_model() first.")
+            raise RuntimeError("Model not loaded.")
 
         try:
-            logger.info(f"Designing voice: [{instruction[:80]}...]")
-
+            logger.info(f"Designing voice: {instruction}")
+            
+            # The faster-qwen3-tts library supports voice design on the VoiceDesign model variant
             audio_list, sr = self.model.generate_voice_design(
                 text=text,
                 instruct=instruction,
-                language=language,
+                language=language
             )
-
-            # audio_list is a list of numpy arrays
-            audio_data = audio_list[0] if isinstance(audio_list, list) else audio_list
-
-            # Normalize to prevent clipping
-            if isinstance(audio_data, np.ndarray):
-                max_val = np.max(np.abs(audio_data))
-                if max_val > 1.0:
-                    audio_data = audio_data / max_val
-
-            os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
-            sf.write(output_path, audio_data, sr)
-            logger.info(f"Voice designed and saved to: {output_path}")
-            return output_path
-
-        except Exception as e:
-            logger.error(f"Voice design failed: {e}\n{traceback.format_exc()}")
-            return None
-
-    def generate_voice_clone(
-        self,
-        text: str,
-        ref_audio_path: str,
-        ref_text: str,
-        language: str,
-        emotion_instruction: Optional[str] = None,
-        output_path: Optional[str] = None,
-    ) -> Optional[str]:
-        """Clone a reference voice and optionally apply emotion acting.
-        
-        Uses the Base model variant. The instruct parameter is used for
-        emotion/style instructions (e.g. "Parlez avec colere et tension").
-        
-        Args:
-            text: The text to synthesize
-            ref_audio_path: Path to the reference WAV file (from voice design)
-            ref_text: The text spoken in the reference audio
-            language: Language code
-            emotion_instruction: Optional emotion instruction in French/English
-            output_path: Where to save the output WAV
             
-        Returns:
-            Path to the generated WAV, or None on failure
-        """
-        if not self.model:
-            raise RuntimeError("Model not loaded. Call load_model() first.")
-
-        if not text.strip():
-            logger.warning("Empty text provided, skipping generation.")
+            audio_data = audio_list[0] if isinstance(audio_list, list) else audio_list
+            
+            os.makedirs(os.path.dirname(output_path), exist_ok=True)
+            sf.write(output_path, audio_data, sr)
+            return output_path
+            
+        except Exception as e:
+            logger.error(f"Voice design failed: {e}")
             return None
 
-        out_path = output_path or os.path.join(
-            tempfile.gettempdir(), f"tts_{int(time.time())}.wav"
-        )
-        os.makedirs(os.path.dirname(os.path.abspath(out_path)), exist_ok=True)
+    def generate_voice_clone(self, text: str, ref_audio_path: str, ref_text: str, language: str, emotion_instruction: Optional[str] = None, output_path: Optional[str] = None) -> Optional[str]:
+        """Clone an existing voice and apply emotion acting to the text."""
+        if not self.model:
+            raise RuntimeError("Model not loaded.")
+
+        full_prompt = f"{emotion_instruction}. {text}" if emotion_instruction else text
+        out_path = output_path or os.path.join(tempfile.gettempdir(), f"tts_{time.time()}.wav")
+        os.makedirs(os.path.dirname(out_path), exist_ok=True)
 
         try:
-            logger.info(f"Generating [{len(text)} chars] with emotion: {emotion_instruction}")
-
-            # Use the instruct parameter for emotion acting
-            # This is the correct way per faster-qwen3-tts API
+            logger.info(f"Generating audio [{len(text)} chars]")
+            
             audio_list, sr = self.model.generate_voice_clone(
-                text=text,
+                text=full_prompt,
                 language=language,
                 ref_audio=ref_audio_path,
                 ref_text=ref_text,
-                instruct=emotion_instruction,  # Emotion goes here!
-                non_streaming_mode=True,
             )
-
-            # audio_list is a list of numpy arrays
+            
             audio_data = audio_list[0] if isinstance(audio_list, list) else audio_list
-
-            # Normalize to prevent clipping
-            if isinstance(audio_data, np.ndarray):
-                max_val = np.max(np.abs(audio_data))
-                if max_val > 1.0:
-                    audio_data = audio_data / max_val
-
+            
+            # Normalize if needed (prevent clipping)
+            if np.max(np.abs(audio_data)) > 1.0:
+                audio_data = audio_data / np.max(np.abs(audio_data))
+            
             sf.write(out_path, audio_data, sr)
-            logger.info(f"Audio generated: {out_path}")
             return out_path
-
+            
         except Exception as e:
-            logger.error(f"Voice clone generation failed: {e}\n{traceback.format_exc()}")
+            logger.error(f"Generation failed: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
             return None
 
-    def generate_custom_voice(
-        self,
-        text: str,
-        speaker: str,
-        language: str,
-        output_path: Optional[str] = None,
-    ) -> Optional[str]:
-        """Generate speech using a built-in CustomVoice speaker.
-        
-        Uses the CustomVoice model variant with predefined speakers.
+    @staticmethod
+    def generate_silence(duration_sec: float, sample_rate: int = 24000) -> Tuple[np.ndarray, int]:
+        """Generate a silence audio array."""
+        num_samples = int(duration_sec * sample_rate)
+        silence = np.zeros(num_samples, dtype=np.float32)
+        return silence, sample_rate
+
+    @staticmethod
+    def assemble_wav_files(
+        wav_files: List[str],
+        output_path: str,
+        silence_duration: float = 0.75,
+        sample_rate: int = 24000,
+        normalize: bool = True,
+        book_title: str = "Audiobook",
+        chapter_titles: Optional[List[str]] = None,
+    ) -> str:
+        """Assemble a list of WAV files into a single M4A with silence between segments.
         
         Args:
-            text: Text to synthesize
-            speaker: Speaker ID (e.g. "ryan", "aiden")
-            language: Language code
-            output_path: Where to save the output WAV
+            wav_files: Ordered list of WAV file paths
+            output_path: Output M4A/M4B file path
+            silence_duration: Seconds of silence between segments (default 0.75)
+            sample_rate: Target sample rate
+            normalize: Apply loudness normalization
+            book_title: Title for metadata
+            chapter_titles: Optional list of chapter boundary titles
             
         Returns:
-            Path to the generated WAV, or None on failure
+            Path to the assembled M4A file
         """
-        if not self.model:
-            raise RuntimeError("Model not loaded. Call load_model() first.")
-
-        out_path = output_path or os.path.join(
-            tempfile.gettempdir(), f"tts_custom_{int(time.time())}.wav"
-        )
-        os.makedirs(os.path.dirname(os.path.abspath(out_path)), exist_ok=True)
-
-        try:
-            audio_list, sr = self.model.generate_custom_voice(
-                text=text,
-                speaker=speaker,
-                language=language,
-            )
-
-            audio_data = audio_list[0] if isinstance(audio_list, list) else audio_list
-
-            if isinstance(audio_data, np.ndarray):
-                max_val = np.max(np.abs(audio_data))
-                if max_val > 1.0:
-                    audio_data = audio_data / max_val
-
-            sf.write(out_path, audio_data, sr)
-            logger.info(f"Custom voice generated: {out_path}")
-            return out_path
-
-        except Exception as e:
-            logger.error(f"Custom voice generation failed: {e}\n{traceback.format_exc()}")
-            return None
-
-    def list_speakers(self) -> List[str]:
-        """List available built-in speakers for the CustomVoice model."""
-        if not self.model:
-            return []
-        try:
-            return self.model.get_supported_speakers()
-        except Exception:
-            return []
-
-    def __del__(self):
-        self.unload_model()
+        if not wav_files:
+            raise ValueError("No WAV files to assemble")
+        
+        logger.info(f"Assembling {len(wav_files)} WAV files into {output_path}")
+        logger.info(f"Silence between segments: {silence_duration}s")
+        
+        # Generate silence buffer
+        silence_samples = int(silence_duration * sample_rate)
+        silence_buf = np.zeros(silence_samples, dtype=np.float32)
+        
+        # Concatenate all audio with silence
+        all_audio = []
+        chapter_starts_ms = []
+        cumulative_ms = 0
+        
+        for i, wav_path in enumerate(wav_files):
+            if not os.path.exists(wav_path):
+                logger.warning(f"Skipping missing file: {wav_path}")
+                continue
+            
+            try:
+                data, sr = sf.read(wav_path, dtype='float32')
+                
+                # Resample if needed
+                if sr != sample_rate:
+                    import subprocess
+                    # Use ffmpeg for resampling
+                    resampled_path = wav_path + ".resampled.wav"
+                    subprocess.run([
+                        "ffmpeg", "-y", "-i", wav_path,
+                        "-ar", str(sample_rate),
+                        "-ac", "1",
+                        resampled_path
+                    ], capture_output=True, timeout=30)
+                    data, sr = sf.read(resampled_path, dtype='float32')
+                    try: os.unlink(resampled_path)
+                    except: pass
+                
+                # Convert stereo to mono if needed
+                if len(data.shape) > 1:
+                    data = data.mean(axis=1)
+                
+                # Track chapter start position
+                chapter_starts_ms.append(int(cumulative_ms))
+                
+                all_audio.append(data)
+                cumulative_ms += int(len(data) / sample_rate * 1000)
+                
+                # Add silence between segments (not after the last one)
+                if i < len(wav_files) - 1:
+                    all_audio.append(silence_buf)
+                    cumulative_ms += int(silence_duration * 1000)
+                    
+            except Exception as e:
+                logger.warning(f"Error reading {wav_path}: {e}")
+                continue
+        
+        if not all_audio:
+            raise ValueError("No valid audio data to assemble")
+        
+        # Concatenate all buffers
+        full_audio = np.concatenate(all_audio)
+        
+        # Normalize loudness (simple peak normalization)
+        if normalize:
+            peak = np.max(np.abs(full_audio))
+            if peak > 0:
+                target_peak = 0.95
+                full_audio = full_audio * (target_peak / peak)
+                logger.info(f"Normalized audio: peak {peak:.3f} -> {target_peak}")
+        
+        # Write intermediate WAV
+        temp_wav = output_path + ".temp.wav"
+        sf.write(temp_wav, full_audio, sample_rate)
+        
+        # Build chapter metadata for FFmpeg
+        metadata_content = ";FFMETADATA1\n"
+        metadata_content += f"title={book_title}\n"
+        metadata_content += "genre=Audiobook\n"
+        
+        for i, start_ms in enumerate(chapter_starts_ms):
+            # Calculate end time (next chapter start, or end of audio)
+            if i + 1 < len(chapter_starts_ms):
+                end_ms = chapter_starts_ms[i + 1]
+            else:
+                end_ms = int(len(full_audio) / sample_rate * 1000)
+            
+            title = "Chapter"
+            if chapter_titles and i < len(chapter_titles):
+                title = chapter_titles[i]
+            else:
+                title = f"Part {i+1}"
+            
+            metadata_content += "\n[CHAPTER]\n"
+            metadata_content += "TIMEBASE=1/1000\n"
+            metadata_content += f"START={start_ms}\n"
+            metadata_content += f"END={end_ms}\n"
+            metadata_content += f"title={title}\n"
+        
+        # Write metadata file
+        meta_path = output_path + ".meta.txt"
+        with open(meta_path, "w", encoding="utf-8") as f:
+            f.write(metadata_content)
+        
+        # Encode to M4A with FFmpeg
+        import subprocess
+        cmd = [
+            "ffmpeg", "-y",
+            "-i", temp_wav,
+            "-i", meta_path,
+            "-map_metadata", "1",
+            "-c:a", "aac",
+            "-b:a", "128k",
+            "-ar", "44100",
+            "-movflags", "+faststart",
+            output_path
+        ]
+        
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+        
+        if result.returncode != 0:
+            logger.error(f"FFmpeg encoding failed: {result.stderr[:500]}")
+            # Fallback: just copy the WAV as output
+            import shutil
+            wav_output = output_path.replace(".m4a", ".wav").replace(".m4b", ".wav")
+            shutil.copy2(temp_wav, wav_output)
+            logger.info(f"Fallback: saved as WAV: {wav_output}")
+            output_path = wav_output
+        else:
+            logger.info(f"M4A encoded successfully: {output_path}")
+        
+        # Cleanup temp files
+        for tmp in [temp_wav, meta_path]:
+            try: os.unlink(tmp)
+            except: pass
+        
+        return output_path

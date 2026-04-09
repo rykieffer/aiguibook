@@ -218,26 +218,37 @@ class AudiobookGUI:
                 # ==========================
                 with gr.Tab("3. Production"):
                     gr.Markdown("### 3. Generate Audiobook")
-                    gr.Markdown("Generates the audiobook. Requires Base model and Reference WAVs.")
                     
                     with gr.Row():
                         with gr.Column():
-                            # file_epub_prod removed - reusing EPUB from Tab 1
-                            epub_info_box = gr.Markdown("*Loading EPUB status...*")
                             chk_preview = gr.Checkbox(label="Preview Mode (First Chapter)", value=True)
+                            silence_slider = gr.Slider(
+                                minimum=0.0, maximum=2.0, value=0.75, step=0.25,
+                                label="Silence Between Segments (seconds)"
+                            )
+                            output_dir_input = gr.Textbox(
+                                label="Output Folder (leave empty for auto, or paste path to resume)",
+                                placeholder="/tmp/aiguibook_gen_xxxxx",
+                                lines=1
+                            )
                             btn_start_prod = gr.Button("START GENERATION", variant="primary", size="lg")
-                            btn_resume_prod = gr.Button("RESUME", visible=False)
+                            btn_resume_prod = gr.Button("RESUME from Folder", variant="secondary", size="lg")
                         
                         with gr.Column():
                             progress = gr.Slider(value=0, label="Progress")
                             phase = gr.Textbox(label="Current Phase", value="Ready")
                             logs = gr.Textbox(label="System Log", lines=10, elem_classes=["log-box"])
-                            audio_out_prod = gr.Audio(label="Latest Generated Segment", interactive=False)
+                            m4a_out_prod = gr.File(label="Final Audiobook (M4A)", interactive=False)
 
                     btn_start_prod.click(
                         fn=self.start_generation,
-                        inputs=[chk_preview, state],
-                        outputs=[progress, phase, logs, btn_start_prod, btn_resume_prod]
+                        inputs=[chk_preview, silence_slider, output_dir_input, state],
+                        outputs=[progress, phase, logs, m4a_out_prod]
+                    )
+                    btn_resume_prod.click(
+                        fn=self.resume_generation,
+                        inputs=[silence_slider, output_dir_input, state],
+                        outputs=[progress, phase, logs, m4a_out_prod]
                     )
 
                     # Tab 3 Selection: update state
@@ -603,178 +614,301 @@ class AudiobookGUI:
             return f"Error: {e}", []
 
     # --- Tab 3 Handlers (Production) ---
-    def start_generation(self, preview_mode, state):
-        """Generate the audiobook."""
+    def _normalize_tags(self, state):
+        """Ensure tags are plain dicts, not SpeechTag objects."""
+        tags = state.get("tags", {}) if state else {}
+        if not tags:
+            return {}
+        first_val = next(iter(tags.values()), None)
+        if first_val is None:
+            return {}
+        if hasattr(first_val, 'emotion'):
+            # Convert SpeechTag objects to dicts
+            self._log("Normalizing tags from Objects to Dictionaries...")
+            normalized = {}
+            for sid, tag in tags.items():
+                normalized[sid] = {
+                    "speaker": getattr(tag, 'speaker_type', 'narrator'),
+                    "char": getattr(tag, 'character_name', None),
+                    "emotion": getattr(tag, 'emotion', 'neutral'),
+                    "emotion_instruction": getattr(tag, 'emotion_instruction', ""),
+                    "text": getattr(tag, 'text', ""),
+                }
+            return normalized
+        return dict(tags)
+
+    def _build_segments_from_tags(self):
+        """Build a simple segment list from tags (no EPUB re-parse needed)."""
+        segs = []
+        for sid in sorted(self._tags.keys()):
+            segs.append({"id": sid, "text": self._tags[sid].get("text", "")})
+        return segs
+
+    def _generate_loop(self, all_segs, output_dir, silence_duration, skip_existing=False):
+        """Core generation loop. Yields progress updates."""
+        engine = self._get_engine()
         
-        # Check state
-        if not state:
-            yield 0, "Error: Missing application state.", self._get_logs(), gr.update(interactive=True), gr.update(visible=False)
-            return
+        # Count how many need generation
+        total = len(all_segs)
+        if skip_existing:
+            already_done = sum(
+                1 for s in all_segs
+                if os.path.exists(os.path.join(output_dir, f"{s['id'] if isinstance(s, dict) else s.id}.wav"))
+            )
+            self._log(f"Resume: {already_done}/{total} segments already exist, skipping those.")
+            yield 5, f"Resuming: {already_done} already done", self._get_logs(), None
+        else:
+            already_done = 0
+        
+        # Load Base Model
+        self._log("Loading Base Model (this takes time)...")
+        yield 8, "Loading Base Model...", self._get_logs(), None
+        engine.load_model(self._voice_model_variant_base)
+        
+        generated_count = already_done
+        failed_count = 0
 
-        if not state.get("analyzed"):
-            yield 0, "Error: Run Analysis first in Tab 1.", self._get_logs(), gr.update(interactive=True), gr.update(visible=False)
+        for i, seg in enumerate(all_segs):
+            seg_id = seg.id if hasattr(seg, 'id') else seg.get("id", "")
+            out_path = os.path.join(output_dir, f"{seg_id}.wav")
+            
+            # Skip if already generated (resume support)
+            if skip_existing and os.path.exists(out_path):
+                continue
+            
+            # Determine tag data
+            tag_data = self._tags.get(seg_id, {})
+            char_name = tag_data.get("char") or tag_data.get("character_name") or "Narrator"
+            emotion = tag_data.get("emotion", "calm")
+            
+            if char_name not in self._characters and char_name != "Narrator":
+                char_name = "Narrator"
+            
+            # Determine reference audio
+            strategy = getattr(self, 'voice_strategy', 'single_narrator')
+            if strategy == "single_narrator":
+                ref_audio = self.narrator_wav_path
+            else:
+                ref_audio = self.narrator_wav_path
+                if char_name != "Narrator" and char_name in self.character_voice_paths:
+                    ref_audio = self.character_voice_paths[char_name]
+            
+            if not ref_audio:
+                self._log(f"Skipping {seg_id}: No reference audio for {char_name}")
+                failed_count += 1
+                continue
+            
+            # Get text
+            text = seg.text if hasattr(seg, 'text') else seg.get("text", "")
+            if not text.strip():
+                # Try to get from tags
+                text = tag_data.get("text", "")
+            if not text.strip():
+                continue
+            
+            # Emotion instruction
+            from audiobook_ai.analysis.character_analyzer import EMOTION_INSTRUCTIONS_FR
+            emotion_instr = EMOTION_INSTRUCTIONS_FR.get(emotion, EMOTION_INSTRUCTIONS_FR["calm"])
+            
+            # Ref text
+            if strategy == "single_narrator" or char_name == "Narrator":
+                ref_text = self.narrator_ref_text or text
+            else:
+                ref_text = self.character_ref_texts.get(char_name, self.narrator_ref_text or text)
+            
+            self._log(f"Generating [{char_name}] -> {seg_id} ...")
+            
+            try:
+                gen_path = engine.generate_voice_clone(
+                    text=text,
+                    ref_audio_path=ref_audio,
+                    ref_text=ref_text,
+                    language="french",
+                    emotion_instruction=emotion_instr,
+                    output_path=out_path
+                )
+                if gen_path:
+                    generated_count += 1
+                else:
+                    failed_count += 1
+            except Exception as e:
+                self._log(f"Failed: {seg_id}: {e}")
+                failed_count += 1
+            
+            # Yield every 5 segments
+            if (i + 1) % 5 == 0 or i == total - 1:
+                pct = 10 + (generated_count / total * 80)
+                yield pct, f"Generated {generated_count}/{total} ({failed_count} failed)", self._get_logs(), None
+        
+        engine.unload_model()
+        self._log(f"Generation complete: {generated_count} OK, {failed_count} failed")
+        
+        # --- ASSEMBLE M4A ---
+        self._log("Assembling final audiobook...")
+        yield 92, "Assembling M4A...", self._get_logs(), None
+        
+        # Collect all WAV files in order
+        wav_files = []
+        for seg in all_segs:
+            seg_id = seg.id if hasattr(seg, 'id') else seg.get("id", "")
+            wav_path = os.path.join(output_dir, f"{seg_id}.wav")
+            if os.path.exists(wav_path):
+                wav_files.append(wav_path)
+        
+        if not wav_files:
+            yield 0, "Error: No WAV files generated.", self._get_logs(), None
             return
+        
+        # Determine book title
+        book_title = "Audiobook"
+        if hasattr(self, '_epub_parser') and self._epub_parser:
+            try:
+                data = self._epub_parser.parse() if not self._chapters_list else {"metadata": {}}
+                meta = data.get("metadata", {})
+                book_title = meta.get("title", "Audiobook")
+            except:
+                pass
+        
+        # Build chapter titles from segment chapter prefixes
+        chapter_titles = []
+        seen_chapters = set()
+        for seg in all_segs:
+            seg_id = seg.id if hasattr(seg, 'id') else seg.get("id", "")
+            ch_prefix = seg_id.split("_")[0]  # e.g. "ch0"
+            if ch_prefix not in seen_chapters:
+                seen_chapters.add(ch_prefix)
+                ch_idx = int(ch_prefix.replace("ch", ""))
+                if ch_idx < len(self._chapters_list):
+                    ch = self._chapters_list[ch_idx]
+                    title = ch.get("title", f"Chapter {ch_idx+1}") if isinstance(ch, dict) else getattr(ch, "title", f"Chapter {ch_idx+1}")
+                    chapter_titles.append(title)
+                else:
+                    chapter_titles.append(f"Chapter {ch_idx+1}")
+        
+        m4a_path = os.path.join(output_dir, f"{book_title.replace(' ', '_')}.m4a")
+        
+        from audiobook_ai.tts.qwen_engine import TTSEngine
+        try:
+            result_path = TTSEngine.assemble_wav_files(
+                wav_files=wav_files,
+                output_path=m4a_path,
+                silence_duration=silence_duration,
+                sample_rate=24000,
+                normalize=True,
+                book_title=book_title,
+                chapter_titles=chapter_titles,
+            )
+            self._log(f"Audiobook saved: {result_path}")
+            yield 100, f"Done! {result_path}", self._get_logs(), result_path
+        except Exception as e:
+            self._log(f"Assembly error: {e}")
+            yield 95, f"Assembly failed: {e}", self._get_logs(), None
 
-        # Get EPUB from state (stored by parse_epub)
-        epub_path = state.get("epub_path")
-        if not epub_path:
-            yield 0, "Error: EPUB path not found. Please re-upload EPUB in Tab 1.", self._get_logs(), gr.update(interactive=True), gr.update(visible=False)
+    def start_generation(self, preview_mode, silence_duration, output_dir_text, state):
+        """Generate the audiobook from scratch."""
+        if not state or not state.get("analyzed"):
+            yield 0, "Error: Run Analysis first in Tab 1.", self._get_logs(), None
             return
-
+        
+        if not self.narrator_wav_path:
+            yield 0, "Error: Design narrator voice in Tab 2 first.", self._get_logs(), None
+            return
+        
         self._log("Starting Production Pipeline...")
-        yield 5, "Parsing Book...", self._get_logs(), gr.update(interactive=False), gr.update(visible=True)
+        self._tags = self._normalize_tags(state)
+        self._characters = state.get("chars", [])
+        
+        # Determine output directory
+        if output_dir_text and os.path.isdir(output_dir_text):
+            output_dir = output_dir_text
+            self._log(f"Using existing output folder: {output_dir}")
+        else:
+            output_dir = tempfile.mkdtemp(prefix="aiguibook_gen_")
+            self._log(f"Created output folder: {output_dir}")
+        
+        yield 2, "Preparing segments...", self._get_logs(), None
         
         try:
-            # 1. Parse EPUB
-            from audiobook_ai.core.epub_parser import EPUBParser
-            parser = EPUBParser(epub_path)
-            parser_data = parser.parse()
-            chapters = parser_data.get("chapters", [])
-            self._chapters_list = chapters
-            self._tags = state.get("tags", {})
-            self._characters = state.get("chars", [])
+            # Build segments from tags (text is embedded in JSON)
+            all_segs = self._build_segments_from_tags()
             
-            # --- CRITICAL FIX: Normalize tags to dictionaries ---
-            # run_analysis() might store SpeechTag objects, which cause 
-            # 'SpeechTag object has no attribute get' errors later.
-            if self._tags:
-                # Check the first item to see type
-                first_val = next(iter(self._tags.values()), None)
-                if hasattr(first_val, 'emotion'):
-                    # It's a SpeechTag object (or similar)
-                    self._log("Normalizing tags from Objects to Dictionaries...")
-                    normalized_tags = {}
-                    for sid, tag in self._tags.items():
-                        normalized_tags[sid] = {
-                            "speaker": getattr(tag, 'speaker_type', 'narrator'),
-                            "char": getattr(tag, 'character_name', None),
-                            "emotion": getattr(tag, 'emotion', 'neutral'),
-                            "emotion_instruction": getattr(tag, 'emotion_instruction', "")
-                        }
-                    self._tags = normalized_tags
-                    self._log("Tags normalized successfully.")
-            # --- END FIX ---
-
-            # 2. Segment
-            from audiobook_ai.core.text_segmenter import TextSegmenter
-            seg = TextSegmenter()
-            all_segs = []
-            for ch in chapters:
-                # Support both dict and object
-                if isinstance(ch, dict):
-                    text = ch.get("text", "")
-                    title = ch.get("title", "")
-                    idx = ch.get("spine_order", 0)
-                else:
-                    text = getattr(ch, "text", "")
-                    title = getattr(ch, "title", "")
-                    idx = getattr(ch, "spine_order", 0)
-                
-                if text:
-                    all_segs.extend(seg.segment_chapter(text, title, idx))
+            if not all_segs:
+                # Fallback: re-parse EPUB
+                epub_path = state.get("epub_path")
+                if not epub_path:
+                    yield 0, "Error: No segments and no EPUB path.", self._get_logs(), None
+                    return
+                from audiobook_ai.core.epub_parser import EPUBParser
+                from audiobook_ai.core.text_segmenter import TextSegmenter
+                parser = EPUBParser(epub_path)
+                parser_data = parser.parse()
+                chapters = parser_data.get("chapters", [])
+                self._chapters_list = chapters
+                seg = TextSegmenter()
+                all_segs = []
+                for ch in chapters:
+                    text = ch.get("text", "") if isinstance(ch, dict) else getattr(ch, "text", "")
+                    title = ch.get("title", "") if isinstance(ch, dict) else getattr(ch, "title", "")
+                    idx = ch.get("spine_order", 0) if isinstance(ch, dict) else getattr(ch, "spine_order", 0)
+                    if text:
+                        all_segs.extend(seg.segment_chapter(text, title, idx))
             
-            # Limit for preview
+            # Preview mode: limit to first chapter
             if preview_mode:
-                # Limit to first 1 chapter
-                # Assuming IDs like ch0_...
-                first_ch_segs = [s for s in all_segs if hasattr(s, 'id') and s.id.startswith("ch0") or (isinstance(s, dict) and s.get("id", "").startswith("ch0"))]
-                if not first_ch_segs and all_segs:
-                    # Fallback: just take the first few segments
-                    first_ch_segs = all_segs[:10] # Rough estimate for 1 chapter
-                if first_ch_segs:
-                    all_segs = first_ch_segs
+                first_ch = [s for s in all_segs if (s.id if hasattr(s, 'id') else s.get("id", "")).startswith("ch0")]
+                if first_ch:
+                    all_segs = first_ch
+                    self._log(f"PREVIEW MODE: limited to {len(all_segs)} segments")
             
-            total = len(all_segs)
-            self._log(f"Total segments to generate: {total}")
+            self._log(f"Total segments: {len(all_segs)}")
             
-            # 3. Load Base Model
-            engine = self._get_engine()
-            self._log("Loading Base Model (this takes time)...")
-            yield 10, "Loading Base Model...", self._get_logs(), gr.update(interactive=False), gr.update(visible=True)
-            engine.load_model(self._voice_model_variant_base)
-            
-            generated_count = 0
-            output_dir = tempfile.mkdtemp(prefix="aiguibook_gen_")
-            self._log(f"Saving audio to: {output_dir}")
-
-            for i, seg in enumerate(all_segs):
-                # Determine Speaker
-                seg_id = seg.id if hasattr(seg, 'id') else seg.get("id", "")
-                tag_data = self._tags.get(seg_id, {})
+            # Run generation loop
+            for progress, phase, logs, m4a_file in self._generate_loop(all_segs, output_dir, silence_duration, skip_existing=False):
+                yield progress, phase, logs, m4a_file
                 
-                char_name = tag_data.get("char") or tag_data.get("character_name") or "Narrator"
-                emotion = tag_data.get("emotion", "calm")
-                
-                # If not found in tags, fallback
-                if char_name not in self._characters and char_name != "Narrator":
-                     char_name = "Narrator" # Default to narrator voice
-                
-                # Determine Reference Audio based on Strategy
-                # Check strategy: single_narrator or full_ensemble
-                strategy = getattr(self, 'voice_strategy', 'single_narrator')
-                
-                if strategy == "single_narrator":
-                    # Force Narrator voice regardless of character
-                    ref_audio = self.narrator_wav_path
-                else:
-                    # Full Ensemble mode
-                    ref_audio = self.narrator_wav_path # Default fallback
-                    if char_name != "Narrator" and char_name in self.character_voice_paths:
-                        ref_audio = self.character_voice_paths[char_name]
-                
-                if not ref_audio:
-                    self._log(f"Skipping {seg_id}: No reference audio for {char_name}")
-                    continue
-
-                # Determine Text
-                text = seg.text if hasattr(seg, 'text') else seg.get("text", "")
-                
-                # Determine Emotion Instruction
-                from audiobook_ai.analysis.character_analyzer import EMOTION_INSTRUCTIONS_FR
-                emotion_instr = EMOTION_INSTRUCTIONS_FR.get(emotion, EMOTION_INSTRUCTIONS_FR["calm"])
-                
-                # Output path
-                out_path = os.path.join(output_dir, f"{seg_id}.wav")
-                
-                self._log(f"Generating [{char_name}] -> {seg_id} ...")
-                
-                try:
-                    # Determine ref_text: the text spoken in the reference audio
-                    if strategy == "single_narrator" or char_name == "Narrator":
-                        ref_text = self.narrator_ref_text or text
-                    else:
-                        ref_text = self.character_ref_texts.get(char_name, self.narrator_ref_text or text)
-                    
-                    # Generate
-                    gen_path = engine.generate_voice_clone(
-                        text=text,
-                        ref_audio_path=ref_audio,
-                        ref_text=ref_text,
-                        language="french",
-                        emotion_instruction=emotion_instr,
-                        output_path=out_path
-                    )
-                    
-                    if gen_path:
-                        generated_count += 1
-                        self._log(f"Generated: {os.path.basename(gen_path)}")
-                    
-                except Exception as e:
-                    self._log(f"Failed to generate {seg_id}: {e}")
-
-                # Yield every 5 segments to reduce UI sync overhead & keep GPU fed
-                if (i + 1) % 5 == 0 or i == total - 1:
-                    pct = 20 + (i / total * 80)
-                    yield pct, f"Generating {i+1}/{total}", self._get_logs(), gr.update(interactive=False), gr.update(visible=True)
-
-            self._log(f"Completed. Generated {generated_count} segments.")
-            engine.unload_model()
-            
-            yield 100, "Complete!", self._get_logs(), gr.update(interactive=True), gr.update(visible=False)
-
         except Exception as e:
             self._log(f"Fatal Error: {e}")
-            yield 0, f"Error: {e}", self._get_logs(), gr.update(interactive=True), gr.update(visible=False)
+            yield 0, f"Error: {e}", self._get_logs(), None
+
+    def resume_generation(self, silence_duration, output_dir_text, state):
+        """Resume generation from an existing output folder."""
+        if not state or not state.get("analyzed"):
+            yield 0, "Error: Run Analysis first in Tab 1.", self._get_logs(), None
+            return
+        
+        if not output_dir_text or not os.path.isdir(output_dir_text):
+            yield 0, "Error: Paste the output folder path to resume.", self._get_logs(), None
+            return
+        
+        self._tags = self._normalize_tags(state)
+        self._characters = state.get("chars", [])
+        output_dir = output_dir_text
+        
+        self._log(f"Resuming generation from: {output_dir}")
+        
+        # Count existing WAVs
+        existing_wavs = [f for f in os.listdir(output_dir) if f.endswith(".wav")]
+        self._log(f"Found {len(existing_wavs)} existing WAV files in folder")
+        
+        yield 2, f"Found {len(existing_wavs)} existing files. Rebuilding segment list...", self._get_logs(), None
+        
+        try:
+            # Rebuild segment list from tags
+            all_segs = self._build_segments_from_tags()
+            
+            if not all_segs:
+                yield 0, "Error: No segment data in tags. Load the analysis JSON first.", self._get_logs(), None
+                return
+            
+            self._log(f"Total segments: {len(all_segs)}")
+            
+            # Run with skip_existing=True
+            for progress, phase, logs, m4a_file in self._generate_loop(all_segs, output_dir, silence_duration, skip_existing=True):
+                yield progress, phase, logs, m4a_file
+                
+        except Exception as e:
+            self._log(f"Resume Error: {e}")
+            yield 0, f"Error: {e}", self._get_logs(), None
 
     def launch(self, port=7860, share=False, server_name="0.0.0.0"):
         if self.app is None: self.build()
