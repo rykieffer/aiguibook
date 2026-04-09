@@ -288,6 +288,77 @@ class CharacterAnalyzer:
 
         return result
 
+    def build_voice_descriptions_from_text(self, all_tags, unique_chars):
+        """Ask the LLM to describe each character's voice based on their dialogue.
+        
+        Single batched call after analysis is done. The LLM sees actual dialogue
+        excerpts for each character and generates a voice description.
+        """
+        if not self._session or not unique_chars:
+            return {}
+
+        # Gather up to 3 dialogue excerpts per character
+        char_excerpts = {}
+        for char_name in unique_chars:
+            excerpts = []
+            for sid, tag in all_tags.items():
+                if hasattr(tag, 'character_name') and tag.character_name == char_name:
+                    txt = tag.text if hasattr(tag, 'text') else ""
+                    if txt.strip():
+                        excerpts.append(txt.strip()[:200])
+                    if len(excerpts) >= 3:
+                        break
+            if excerpts:
+                char_excerpts[char_name] = excerpts
+
+        if not char_excerpts:
+            return {}
+
+        # Build the prompt
+        chars_text = ""
+        for name, excerpts in char_excerpts.items():
+            chars_text += f"\nCharacter: {name}\n"
+            for i, exc in enumerate(excerpts, 1):
+                chars_text += f"  Excerpt {i}: \"{exc}\"\n"
+
+        prompt = f"""You are a voice casting director for an audiobook. Based on the character's name and dialogue excerpts below, describe the ideal voice for each character in English.
+
+For each character, provide a single voice description sentence that includes:
+- Gender (male/female)
+- Age range (young/middle-aged/elderly)  
+- Voice quality (deep, soft, raspy, bright, etc.)
+- Personality/tone (authoritative, gentle, sly, etc.)
+- Accent (French accent unless clearly foreign)
+
+{chars_text}
+
+Return ONLY a JSON object where keys are character names and values are voice description strings.
+Example: {{"Jean": "A middle-aged male voice, deep and authoritative, French accent, warm but firm tone", "Marie": "A young female voice, bright and expressive, French accent, gentle and curious tone"}}"""
+
+        try:
+            response = self._session.chat.completions.create(
+                model=self._model,
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.3,
+                timeout=60.0,
+            )
+            raw = response.choices[0].message.content or ""
+            content = raw.strip()
+
+            parsed = self._extract_json(content)
+            if parsed and isinstance(parsed, dict):
+                logger.info(f"LLM generated voice descriptions for {len(parsed)} characters")
+                for name, desc in parsed.items():
+                    logger.info(f"  {name}: {desc}")
+                return parsed
+            else:
+                logger.warning("Could not parse voice descriptions from LLM response")
+                return {}
+
+        except Exception as e:
+            logger.warning(f"Voice description generation failed: {e}")
+            return {}
+
     def build_voice_descriptions(self):
         """Generate ElevenLabs-style voice descriptions for each character."""
         descriptions = {}
@@ -383,12 +454,12 @@ class CharacterAnalyzer:
         return False
 
     def analyze_segments(self, segments_list, language="french"):
-        """Analyze all segments, returning (tags_dict, character_list, dedup_map)."""
+        """Analyze all segments, returning (tags_dict, character_list, dedup_map, voice_descs)."""
         result = None
         for item in self.analyze_segments_iter(segments_list, language):
             if item.get("status") == "finished":
                 result = item["result"]
-        return result or ({}, [], {})
+        return result or ({}, [], {}, {})
 
     def analyze_segments_iter(self, segments_list, language="french"):
         """Generator: yields progress updates during analysis."""
@@ -466,13 +537,19 @@ class CharacterAnalyzer:
                 merged_chars.setdefault(canonical, set()).add(seg_id)
         self._characters = {k: v for k, v in merged_chars.items() if v}
 
+        # --- LLM-based voice descriptions ---
+        print("[Voice Descriptions] Asking LLM to describe each character's voice...")
+        voice_descs = self.build_voice_descriptions_from_text(all_tags, unique_merged)
+        if voice_descs:
+            print("[Voice Descriptions] Generated %d descriptions" % len(voice_descs))
+
         logger.info("Analysis complete: %d segments, %d chars -> %d deduped in %.0fs" % (
             len(all_tags), len(unique_chars), len(unique_merged), total_time,
         ))
         yield {
             "status": "finished",
             "msg": "Analysis complete!",
-            "result": (all_tags, unique_merged, deduped),
+            "result": (all_tags, unique_merged, deduped, voice_descs),
         }
 
     def _analyze_single_segment(self, seg_id, text, language):

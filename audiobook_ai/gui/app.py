@@ -125,6 +125,7 @@ class AudiobookGUI:
             "book_author": self._book_author,
             "chars": state.get("chars", []) if state else [],
             "tags": tags_dict,
+            "voice_descriptions": self.character_voice_descs,
         }
         path = self.analysis_json_path
         with open(path, "w", encoding="utf-8") as f:
@@ -395,11 +396,19 @@ class AudiobookGUI:
                     yield item["msg"], [], state
                 elif item["status"] == "finished":
                     result = item["result"]
-                    tags, chars, _dedup_map = result[0], result[1], result[2]
+                    tags, chars, _dedup_map, voice_descs = result[0], result[1], result[2], result[3] if len(result) > 3 else {}
 
             self.tags = tags
             self._characters = chars
             self.dedup_map = _dedup_map
+
+            # Store LLM-generated voice descriptions
+            if voice_descs:
+                for char_name, desc in voice_descs.items():
+                    if desc and desc.strip():
+                        self.character_voice_descs[char_name] = desc
+                self._log(f"LLM generated voice descriptions for {len(voice_descs)} characters")
+
             state["analyzed"] = True
             state["tags"] = tags
             state["chars"] = chars
@@ -459,6 +468,12 @@ class AudiobookGUI:
             self._characters = chars
             raw_tags = data.get("tags", {})
             self._tags = raw_tags
+
+            # Load voice descriptions
+            saved_descs = data.get("voice_descriptions", {})
+            if saved_descs:
+                self.character_voice_descs = saved_descs
+                self._log(f"Loaded {len(saved_descs)} voice descriptions from project")
 
             state["analyzed"] = True
             state["chars"] = chars
@@ -633,7 +648,8 @@ class AudiobookGUI:
             df_data = []
             for char in chars:
                 path = self.character_voice_paths.get(char, "Pending")
-                df_data.append([char, path if path != "Pending" else self.character_voice_descs.get(char, ""), "Done" if path != "Pending" else "Pending"])
+                desc = self.character_voice_descs.get(char, "")
+                df_data.append([char, desc if desc else (path if path != "Pending" else ""), "Done" if path != "Pending" else desc[:50] + "..." if desc else "Pending"])
 
             return status, df_data
 
