@@ -375,12 +375,12 @@ class AudiobookGUI:
 
             yield f"Found {len(chapters)} chapters. Segmenting...", [], state
 
-            for ch in chapters:
+            for ch_idx, ch in enumerate(chapters):
                 txt = ch.get("text", "") if isinstance(ch, dict) else getattr(ch, 'text', "")
                 title = ch.get("title", "") if isinstance(ch, dict) else getattr(ch, 'title', "")
-                idx = ch.get("spine_order", 0) if isinstance(ch, dict) else getattr(ch, 'spine_order', 0)
+                # ALWAYS use sequential index, ignore spine_order to avoid gaps
                 if txt:
-                    all_segs.extend(seg.segment_chapter(txt, title, idx))
+                    all_segs.extend(seg.segment_chapter(txt, title, ch_idx))
 
             if not all_segs:
                 yield "Error: No text found to analyze.", [], state
@@ -874,12 +874,11 @@ class AudiobookGUI:
                 self._chapters_list = chapters
                 seg = TextSegmenter()
                 all_segs = []
-                for ch in chapters:
+                for ch_idx, ch in enumerate(chapters):
                     text = ch.get("text", "") if isinstance(ch, dict) else getattr(ch, "text", "")
                     title = ch.get("title", "") if isinstance(ch, dict) else getattr(ch, "title", "")
-                    idx = ch.get("spine_order", 0) if isinstance(ch, dict) else getattr(ch, "spine_order", 0)
                     if text:
-                        all_segs.extend(seg.segment_chapter(text, title, idx))
+                        all_segs.extend(seg.segment_chapter(text, title, ch_idx))
 
             if preview_mode:
                 first_ch = [s for s in all_segs if (s.id if hasattr(s, 'id') else s.get("id", "")).startswith("ch0")]

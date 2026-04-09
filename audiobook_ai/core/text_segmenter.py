@@ -155,14 +155,13 @@ class TextSegmenter:
     def segment_full_book(self, chapters_list: list) -> Dict[int, List[TextSegment]]:
         """Segment all chapters in a book."""
         result = {}
-        for chapter in chapters_list:
+        for ch_idx, chapter in enumerate(chapters_list):
             text = chapter.text if hasattr(chapter, "text") else chapter.get("text", "")
             title = chapter.title if hasattr(chapter, "title") else chapter.get("title", "")
-            idx = chapter.spine_order if hasattr(chapter, "spine_order") else chapter.get("spine_order", 0)
 
-            segs = self.segment_chapter(text, title, idx)
+            segs = self.segment_chapter(text, title, ch_idx)
             if segs:
-                result[idx] = segs
+                result[ch_idx] = segs
             if hasattr(chapter, "segments"):
                 chapter.segments = segs
 
