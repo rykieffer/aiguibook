@@ -925,10 +925,20 @@ class AudiobookGUI:
         if self.app is None:
             self.build()
         self.app.queue()
+
+        # Allow Gradio to serve files from the project directories
+        # (voices, segments, m4a output) - otherwise it throws InvalidPathError
+        allowed = [DEFAULT_PROJECTS_ROOT]
+        if self.project_dir and os.path.isdir(self.project_dir):
+            allowed.append(self.project_dir)
+            allowed.append(os.path.join(self.project_dir, "voices"))
+            allowed.append(os.path.join(self.project_dir, "segments"))
+
         self.app.launch(
             server_name=server_name,
             server_port=port,
             share=share,
             theme=self.theme,
             css=self.css,
+            allowed_paths=allowed,
         )
